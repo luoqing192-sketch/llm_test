@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 聊天助手</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <!-- Login Page -->
+  <div id="login-page" class="page">
+    <div class="login-container">
+      <h1><i class="fas fa-robot"></i> AI 聊天助手</h1>
+      <form id="login-form">
+        <div class="form-group">
+          <label for="username">用户名</label>
+          <input type="text" id="username" name="username" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="password">密码</label>
+          <input type="password" id="password" name="password" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn-primary">登录</button>
+        <div id="login-error" class="error-message"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main Chat Page -->
+  <div id="chat-page" class="page hidden">
+    <div class="chat-container">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <div class="sidebar-header">
+          <h2><i class="fas fa-robot"></i> AI 助手</h2>
+          <div class="user-info">
+            <span id="user-name"></span>
+            <button id="logout-btn" class="icon-btn" title="退出登录">
+              <i class="fas fa-sign-out-alt"></i>
+            </button>
+          </div>
+        </div>
+        <button id="new-chat-btn" class="btn-secondary">
+          <i class="fas fa-plus"></i> 新对话
+        </button>
+        <div id="conversations-list" class="conversations-list">
+        </div>
+        <div id="admin-panel" class="admin-panel hidden">
+          <button id="admin-toggle-btn" class="btn-secondary">
+            <i class="fas fa-cog"></i> 系统管理
+          </button>
+        </div>
+      </div>
+
+      <!-- Main Chat Area -->
+      <div class="chat-main">
+        <div id="welcome-screen" class="welcome-screen">
+          <i class="fas fa-comments"></i>
+          <h2>欢迎使用 AI 聊天助手</h2>
+          <p>选择左侧对话或创建新对话开始聊天</p>
+        </div>
+
+        <div id="chat-view" class="chat-view hidden">
+          <div class="chat-header">
+            <h3 id="conversation-title"></h3>
+            <button id="delete-conversation-btn" class="icon-btn" title="删除对话">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+          <div id="messages-container" class="messages-container">
+          </div>
+          <div class="input-container">
+            <textarea id="message-input" placeholder="输入消息..." rows="1"></textarea>
+            <button id="send-btn" class="btn-primary">
+              <i class="fas fa-paper-plane"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin Modal -->
+  <div id="admin-modal" class="modal hidden">
+    <div class="modal-content modal-large">
+      <div class="modal-header">
+        <h3>系统管理</h3>
+        <button id="close-modal-btn" class="icon-btn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="admin-tabs">
+          <button class="tab-btn active" data-tab="users">用户管理</button>
+          <button class="tab-btn" data-tab="llm">大模型配置</button>
+          <button class="tab-btn" data-tab="prompts">提示词管理</button>
+          <button class="tab-btn" data-tab="knowledge">知识库管理</button>
+        </div>
+
+        <!-- Users Tab -->
+        <div id="tab-users" class="tab-content active">
+          <div class="admin-actions">
+            <button id="create-user-btn" class="btn-primary">
+              <i class="fas fa-user-plus"></i> 创建用户
+            </button>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>用户名</th>
+                <th>角色</th>
+                <th>创建时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body">
+            </tbody>
+          </table>
+        </div>
+
+        <!-- LLM Settings Tab -->
+        <div id="tab-llm" class="tab-content">
+          <form id="llm-settings-form" class="settings-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="llm_base_url">API Base URL</label>
+                <input type="text" id="llm_base_url" placeholder="https://api.openai.com/v1">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="llm_api_key">API Key</label>
+                <input type="password" id="llm_api_key" placeholder="sk-...">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="llm_model">模型名称</label>
+                <input type="text" id="llm_model" placeholder="gpt-3.5-turbo">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="llm_temperature">温度 (Temperature)</label>
+                <input type="number" id="llm_temperature" step="0.1" min="0" max="2" placeholder="0.7">
+              </div>
+              <div class="form-group">
+                <label for="llm_max_tokens">最大 Token 数</label>
+                <input type="number" id="llm_max_tokens" min="1" max="128000" placeholder="4096">
+              </div>
+              <div class="form-group">
+                <label for="llm_top_p">Top P</label>
+                <input type="number" id="llm_top_p" step="0.1" min="0" max="1" placeholder="0.9">
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="knowledge_retrieval_limit">知识库检索数量</label>
+                <input type="number" id="knowledge_retrieval_limit" min="1" max="10" placeholder="3">
+              </div>
+              <div class="form-group">
+                <label for="knowledge_min_score">最小相关性分数</label>
+                <input type="number" id="knowledge_min_score" step="0.01" min="0" max="1" placeholder="0.1">
+              </div>
+            </div>
+            <button type="submit" class="btn-primary">保存设置</button>
+          </form>
+        </div>
+
+        <!-- Prompts Tab -->
+        <div id="tab-prompts" class="tab-content">
+          <div class="admin-actions">
+            <button id="create-prompt-btn" class="btn-primary">
+              <i class="fas fa-plus"></i> 创建提示词
+            </button>
+            <button id="test-prompt-btn" class="btn-secondary">
+              <i class="fas fa-flask"></i> 测试提示词
+            </button>
+          </div>
+          <div id="current-prompt-display" class="current-prompt-display">
+            <strong>当前激活的提示词：</strong>
+            <span id="active-prompt-name">无</span>
+          </div>
+          <div id="prompts-list" class="cards-list">
+          </div>
+        </div>
+
+        <!-- Knowledge Tab -->
+        <div id="tab-knowledge" class="tab-content">
+          <div class="admin-actions">
+            <button id="create-knowledge-base-btn" class="btn-primary">
+              <i class="fas fa-plus"></i> 创建知识库
+            </button>
+          </div>
+          <div id="knowledge-bases-list" class="cards-list">
+          </div>
+          <div id="knowledge-items-panel" class="hidden">
+            <div class="panel-header">
+              <h4 id="knowledge-base-title"></h4>
+              <button id="back-to-bases-btn" class="btn-secondary">
+                <i class="fas fa-arrow-left"></i> 返回
+              </button>
+            </div>
+            <div class="admin-actions">
+              <button id="create-knowledge-item-btn" class="btn-primary">
+                <i class="fas fa-plus"></i> 添加知识条目
+              </button>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>标题</th>
+                  <th>关键词</th>
+                  <th>创建时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="knowledge-items-table-body">
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Form Modal -->
+  <div id="user-form-modal" class="modal hidden">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <h3 id="user-form-title">创建用户</h3>
+        <button id="close-user-form-btn" class="icon-btn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="user-form">
+          <input type="hidden" id="user-form-id">
+          <div class="form-group">
+            <label for="user-form-username">用户名</label>
+            <input type="text" id="user-form-username" required>
+          </div>
+          <div class="form-group">
+            <label for="user-form-password">密码</label>
+            <input type="password" id="user-form-password" required>
+          </div>
+          <div class="form-group">
+            <label for="user-form-role">角色</label>
+            <select id="user-form-role">
+              <option value="user">普通用户</option>
+              <option value="admin">管理员</option>
+            </select>
+          </div>
+          <button type="submit" class="btn-primary">保存</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Form Modal -->
+  <div id="prompt-form-modal" class="modal hidden">
+    <div class="modal-content modal-medium">
+      <div class="modal-header">
+        <h3 id="prompt-form-title">创建提示词</h3>
+        <button id="close-prompt-form-btn" class="icon-btn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="prompt-form">
+          <input type="hidden" id="prompt-form-id">
+          <div class="form-group">
+            <label for="prompt-form-name">名称</label>
+            <input type="text" id="prompt-form-name" required>
+          </div>
+          <div class="form-group">
+            <label for="prompt-form-description">描述</label>
+            <input type="text" id="prompt-form-description">
+          </div>
+          <div class="form-group">
+            <label for="prompt-form-content">提示词内容</label>
+            <textarea id="prompt-form-content" rows="8" required></textarea>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="prompt-form-active"> 设为激活状态
+            </label>
+          </div>
+          <button type="submit" class="btn-primary">保存</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Prompt Test Modal -->
+  <div id="prompt-test-modal" class="modal hidden">
+    <div class="modal-content modal-medium">
+      <div class="modal-header">
+        <h3>测试提示词</h3>
+        <button id="close-prompt-test-btn" class="icon-btn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="prompt-test-content">提示词内容</label>
+          <textarea id="prompt-test-content" rows="6" placeholder="输入要测试的提示词内容..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="prompt-test-message">测试消息</label>
+          <input type="text" id="prompt-test-message" placeholder="输入测试消息...">
+        </div>
+        <button id="run-test-btn" class="btn-primary">
+          <i class="fas fa-play"></i> 运行测试
+        </button>
+        <div id="prompt-test-result" class="prompt-test-result hidden">
+          <h4>测试结果：</h4>
+          <div id="prompt-test-output" class="prompt-test-output"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Knowledge Base Form Modal -->
+  <div id="knowledge-base-form-modal" class="modal hidden">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <h3 id="knowledge-base-form-title">创建知识库</h3>
+        <button id="close-knowledge-base-form-btn" class="icon-btn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="knowledge-base-form">
+          <input type="hidden" id="knowledge-base-form-id">
+          <div class="form-group">
+            <label for="knowledge-base-form-name">名称</label>
+            <input type="text" id="knowledge-base-form-name" required>
+          </div>
+          <div class="form-group">
+            <label for="knowledge-base-form-description">描述</label>
+            <textarea id="knowledge-base-form-description" rows="3"></textarea>
+          </div>
+          <button type="submit" class="btn-primary">保存</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Knowledge Item Form Modal -->
+  <div id="knowledge-item-form-modal" class="modal hidden">
+    <div class="modal-content modal-medium">
+      <div class="modal-header">
+        <h3 id="knowledge-item-form-title">添加知识条目</h3>
+        <button id="close-knowledge-item-form-btn" class="icon-btn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="knowledge-item-form">
+          <input type="hidden" id="knowledge-item-form-id">
+          <input type="hidden" id="knowledge-item-form-base-id">
+          <div class="form-group">
+            <label for="knowledge-item-form-title">标题</label>
+            <input type="text" id="knowledge-item-form-title" required>
+          </div>
+          <div class="form-group">
+            <label for="knowledge-item-form-keywords">关键词（用逗号分隔）</label>
+            <input type="text" id="knowledge-item-form-keywords" placeholder="关键词1, 关键词2, 关键词3">
+          </div>
+          <div class="form-group">
+            <label for="knowledge-item-form-content">内容</label>
+            <textarea id="knowledge-item-form-content" rows="10" required></textarea>
+          </div>
+          <button type="submit" class="btn-primary">保存</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
