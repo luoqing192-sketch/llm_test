@@ -128,7 +128,7 @@ function updateConversationList() {
   list.innerHTML = conversations.map(conv => `
     <div class="conversation-item ${conv.id === currentConversationId ? 'active' : ''}" data-id="${conv.id}">
       <span>${escapeHtml(conv.title)}</span>
-      <button onclick="deleteConversation(${conv.id}, event)" title="删除">
+      <button onclick="deleteConversation(${conv.id}, event)" title="删除此对话">
         <i class="fas fa-trash"></i>
       </button>
     </div>
@@ -144,29 +144,14 @@ function updateConversationList() {
   });
 }
 
-async function createConversation() {
-  try {
-    const response = await fetch(`${API_BASE}/api/conversations`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ title: '新对话' })
-    });
-
-    if (!response.ok) {
-      throw new Error('创建对话失败');
-    }
-
-    const conversation = await response.json();
-    conversations.unshift(conversation);
-    updateConversationList();
-    openConversation(conversation.id);
-  } catch (error) {
-    console.error('Error creating conversation:', error);
-    alert('创建对话失败');
-  }
+function createConversation() {
+  // Just show empty chat view, don't create in database yet
+  currentConversationId = null;
+  document.getElementById('conversation-title').textContent = '新对话';
+  document.getElementById('messages-container').innerHTML = '';
+  showChatView();
+  updateConversationList();
+  document.getElementById('message-input').focus();
 }
 
 async function openConversation(id) {
@@ -213,7 +198,39 @@ function renderMessages(messages) {
 async function deleteConversation(id, event) {
   event.stopPropagation();
   
-  if (!confirm('确定要删除这个对话吗？')) return;
+  const conv = conversations.find(c => c.id === id);
+  const title = conv ? conv.title : '此对话';
+  
+  showConfirmDialog(
+    '删除对话',
+    `确定要删除「${title}」吗？此操作不可撤销。`,
+    'fas fa-trash-alt',
+    async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/conversations/${id}`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        if (!response.ok) {
+          throw new Error('删除对话失败');
+        }
+
+        conversations = conversations.filter(c => c.id !== id);
+        
+        if (currentConversationId === id) {
+          showWelcomeScreen();
+        }
+        
+        updateConversationList();
+        showToast('对话已删除', 'success');
+      } catch (error) {
+        console.error('Error deleting conversation:', error);
+        showToast('删除对话失败', 'error');
+      }
+    }
+  );
+}
 
   try {
     const response = await fetch(`${API_BASE}/api/conversations/${id}`, {
@@ -244,7 +261,37 @@ async function sendMessage() {
   const input = document.getElementById('message-input');
   const message = input.value.trim();
   
-  if (!message || !currentConversationId) return;
+  if (!message) return;
+
+  // If no current conversation, create one first
+  if (!currentConversationId) {
+    try {
+      // Use first 20 characters of message as title
+      const title = message.length > 20 ? message.substring(0, 20) + '...' : message;
+      const response = await fetch(`${API_BASE}/api/conversations`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ title })
+      });
+
+      if (!response.ok) {
+        throw new Error('创建对话失败');
+      }
+
+      const conversation = await response.json();
+      conversations.unshift(conversation);
+      currentConversationId = conversation.id;
+      document.getElementById('conversation-title').textContent = conversation.title;
+      updateConversationList();
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+      showToast('创建对话失败', 'error');
+      return;
+    }
+  }
 
   input.value = '';
   input.style.height = 'auto';
@@ -460,10 +507,11 @@ async function saveUser(event) {
     }
 
     hideUserFormModal();
+    showToast('用户已保存', 'success');
     await loadUsers();
   } catch (error) {
     console.error('Error saving user:', error);
-    alert(error.message);
+    showToast(error.message, 'error');
   }
 }
 
@@ -548,7 +596,8 @@ async function saveLLMSettings(event) {
       throw new Error('保存设置失败');
     }
 
-    alert('设置已保存');
+    showToast('设置已保存', 'success');
+    hideAdminModal();
   } catch (error) {
     console.error('Error saving settings:', error);
     alert('保存设置失败');
@@ -690,10 +739,11 @@ async function savePrompt(event) {
     }
 
     hidePromptFormModal();
+    showToast('提示词已保存', 'success');
     await loadPrompts();
   } catch (error) {
     console.error('Error saving prompt:', error);
-    alert(error.message);
+    showToast(error.message, 'error');
   }
 }
 
@@ -847,6 +897,124 @@ async function deletePrompt(promptId) {
   }
 }
 
+// ==================== Document Management ====================
+
+async function loadDocuments(knowledgeBaseId) {
+  try {
+    const response = await fetch(`${API_BASE}/api/admin/knowledge-bases/${knowledgeBaseId}/documents`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+
+    if (!response.ok) {
+      throw new Error('加载文档列表失败');
+    }
+
+    const documents = await response.json();
+    renderDocumentsTable(documents);
+  } catch (error) {
+    console.error('Error loading documents:', error);
+    showToast('加载文档列表失败', 'error');
+  }
+}
+
+function renderDocumentsTable(documents) {
+  const tbody = document.getElementById('documents-table-body');
+  
+  if (!documents || documents.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-secondary); padding: 2rem;">暂无文档</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = documents.map(doc => `
+    <tr>
+      <td>${escapeHtml(doc.filename)}</td>
+      <td>${formatFileSize(doc.file_size)}</td>
+      <td>
+        <span class="status-badge status-${doc.status}">${getStatusText(doc.status)}</span>
+      </td>
+      <td>${new Date(doc.created_at).toLocaleString('zh-CN')}</td>
+      <td>
+        <button class="btn-delete" onclick="deleteDocument(${doc.id})">
+          <i class="fas fa-trash"></i> 删除
+        </button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function formatFileSize(bytes) {
+  if (bytes === 0) return '0 Bytes';
+  const k = 1024;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+function getStatusText(status) {
+  const statusMap = {
+    'pending': '待处理',
+    'processing': '处理中',
+    'completed': '已完成',
+    'failed': '失败'
+  };
+  return statusMap[status] || status;
+}
+
+async function uploadDocuments(files, knowledgeBaseId) {
+  const formData = new FormData();
+  formData.append('knowledge_base_id', knowledgeBaseId);
+  
+  for (let i = 0; i < files.length; i++) {
+    formData.append('files', files[i]);
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/api/admin/documents/upload`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` },
+      body: formData
+    });
+
+    if (!response.ok) {
+      throw new Error('上传文档失败');
+    }
+
+    const result = await response.json();
+    showToast(result.message, 'success');
+    
+    // Reload documents list
+    await loadDocuments(knowledgeBaseId);
+  } catch (error) {
+    console.error('Error uploading documents:', error);
+    showToast('上传文档失败: ' + error.message, 'error');
+  }
+}
+
+async function deleteDocument(documentId) {
+  showConfirmDialog('删除文档', '确定要删除此文档吗？相关的所有知识条目也会被删除。', async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/admin/documents/${documentId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        throw new Error('删除文档失败');
+      }
+
+      showToast('文档已删除', 'success');
+      
+      // Reload documents list
+      if (currentKnowledgeBaseId) {
+        await loadDocuments(currentKnowledgeBaseId);
+      }
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      showToast('删除文档失败: ' + error.message, 'error');
+    }
+  });
+}
+
 // ==================== Knowledge Base Management ====================
 
 async function loadKnowledgeBases() {
@@ -949,10 +1117,11 @@ async function saveKnowledgeBase(event) {
     }
 
     hideKnowledgeBaseFormModal();
+    showToast('知识库已保存', 'success');
     await loadKnowledgeBases();
   } catch (error) {
     console.error('Error saving knowledge base:', error);
-    alert(error.message);
+    showToast(error.message, 'error');
   }
 }
 
@@ -986,6 +1155,7 @@ async function viewKnowledgeBase(baseId, name) {
   document.getElementById('knowledge-bases-list').classList.add('hidden');
   document.getElementById('knowledge-items-panel').classList.remove('hidden');
   await loadKnowledgeItems(baseId);
+  await loadDocuments(baseId);
 }
 
 function backToKnowledgeBases() {
@@ -1090,10 +1260,11 @@ async function saveKnowledgeItem(event) {
     }
 
     hideKnowledgeItemFormModal();
+    showToast('知识条目已保存', 'success');
     await loadKnowledgeItems(baseId);
   } catch (error) {
     console.error('Error saving knowledge item:', error);
-    alert(error.message);
+    showToast(error.message, 'error');
   }
 }
 
@@ -1148,12 +1319,35 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   }
 });
 
-document.getElementById('logout-btn').addEventListener('click', logout);
+document.getElementById('logout-btn').addEventListener('click', () => {
+  showConfirmDialog(
+    '退出登录',
+    '确定要退出当前账号吗？',
+    'fas fa-sign-out-alt',
+    () => {
+      logout();
+      showToast('已退出登录', 'success');
+    }
+  );
+});
 document.getElementById('new-chat-btn').addEventListener('click', createConversation);
 
 document.getElementById('delete-conversation-btn').addEventListener('click', async () => {
   if (currentConversationId) {
-    await deleteConversation(currentConversationId, { stopPropagation: () => {} });
+    const conv = conversations.find(c => c.id === currentConversationId);
+    const title = conv ? conv.title : '此对话';
+    
+    showConfirmDialog(
+      '删除对话',
+      `确定要删除「${title}」吗？此操作不可撤销。`,
+      'fas fa-trash-alt',
+      async () => {
+        await deleteConversation(currentConversationId, { stopPropagation: () => {} });
+        showToast('对话已删除', 'success');
+      }
+    );
+  } else {
+    showToast('请先选择一个对话', 'info');
   }
 });
 
@@ -1171,6 +1365,23 @@ document.getElementById('message-input').addEventListener('input', function() {
 
 document.getElementById('send-btn').addEventListener('click', sendMessage);
 document.getElementById('admin-toggle-btn').addEventListener('click', showAdminModal);
+
+// Confirm Dialog handlers
+let confirmCallback = null;
+document.getElementById('confirm-ok-btn').addEventListener('click', async () => {
+  document.getElementById('confirm-dialog').classList.add('hidden');
+  if (confirmCallback) {
+    try {
+      await confirmCallback();
+    } catch (e) {
+      showToast(e.message || '操作失败', 'error');
+    }
+  }
+});
+document.getElementById('confirm-cancel-btn').addEventListener('click', () => {
+  document.getElementById('confirm-dialog').classList.add('hidden');
+  confirmCallback = null;
+});
 document.getElementById('close-modal-btn').addEventListener('click', hideAdminModal);
 document.getElementById('create-user-btn').addEventListener('click', () => showUserFormModal());
 document.getElementById('close-user-form-btn').addEventListener('click', hideUserFormModal);
@@ -1206,6 +1417,48 @@ document.getElementById('create-knowledge-item-btn').addEventListener('click', (
 document.getElementById('close-knowledge-item-form-btn').addEventListener('click', hideKnowledgeItemFormModal);
 document.getElementById('knowledge-item-form').addEventListener('submit', saveKnowledgeItem);
 
+// Document Upload
+document.getElementById('upload-document-btn')?.addEventListener('click', () => {
+  if (!currentKnowledgeBaseId) {
+    showToast('请先选择知识库', 'error');
+    return;
+  }
+  document.getElementById('document-file-input').click();
+});
+
+document.getElementById('document-file-input')?.addEventListener('change', async (e) => {
+  const files = e.target.files;
+  if (files.length === 0) return;
+  
+  await uploadDocuments(files, currentKnowledgeBaseId);
+  
+  // Reset file input
+  e.target.value = '';
+});
+
 // ==================== Start ====================
+
+// Toast notification
+function showToast(message, type = 'info', duration = 3000) {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  
+  setTimeout(() => {
+    toast.style.animation = 'slideInRight 0.3s ease-out reverse';
+    setTimeout(() => toast.remove(), 300);
+  }, duration);
+}
+
+// Custom confirm dialog
+function showConfirmDialog(title, message, iconClass, onConfirm) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-message').textContent = message;
+  document.getElementById('confirm-icon').className = iconClass;
+  confirmCallback = onConfirm;
+  document.getElementById('confirm-dialog').classList.remove('hidden');
+}
 
 init();

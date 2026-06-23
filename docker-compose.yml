@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: llm-chat-app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=chatapp
+      - MYSQL_PASSWORD=***
+      - MYSQL_DATABASE=chatapp_prod
+      - MYSQL_CONNECTION_LIMIT=30
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - LLM_API_BASE_URL=${LLM_API_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-gpt-3.5-turbo}
+      - LLM_MAX_CONCURRENT=10
+      - LLM_REQUEST_TIMEOUT=60000
+      - JWT_SECRET=${JWT_SECRET}
+      - LOG_LEVEL=info
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    restart: always
+    networks:
+      - chat-network
+
+  mysql:
+    image: mysql:8.0
+    container_name: llm-chat-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ***
+      MYSQL_DATABASE: chatapp_prod
+      MYSQL_USER: chatapp
+      MYSQL_PASSWORD: ***
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chat-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: llm-chat-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - chat-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: llm-chat-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - app
+    networks:
+      - chat-network
+
+volumes:
+  mysql_data:
+  qdrant_data:
+
+networks:
+  chat-network:
+    driver: bridge

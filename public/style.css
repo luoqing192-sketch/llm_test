@@ -123,11 +123,13 @@ body {
 /* Sidebar */
 .sidebar {
   width: 300px;
+  height: 100vh;
   background-color: var(--bg-dark);
   color: white;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border-color);
+  overflow: hidden;
 }
 
 .sidebar-header {
@@ -156,7 +158,35 @@ body {
 .conversations-list {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 0 1rem;
+  scroll-behavior: smooth;
+  min-height: 0;
+}
+
+.conversations-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.conversations-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.conversations-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.conversations-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Firefox scrollbar */
+.conversations-list {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) rgba(255, 255, 255, 0.05);
 }
 
 .conversation-item {
@@ -193,6 +223,8 @@ body {
   cursor: pointer;
   padding: 0.25rem;
   transition: color 0.2s;
+  position: relative;
+  z-index: 1000;
 }
 
 .conversation-item button:hover {
@@ -333,11 +365,55 @@ body {
   color: inherit;
   cursor: pointer;
   padding: 0.5rem;
-  transition: color 0.2s;
+  transition: all 0.2s;
+  position: relative;
 }
 
 .icon-btn:hover {
   color: var(--primary-color);
+  transform: scale(1.1);
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+.icon-btn[title]:hover::after {
+  content: attr(title);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  margin-bottom: 8px;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-in;
+}
+
+.conversation-item button[title]:hover::after {
+  content: attr(title);
+  position: absolute;
+  right: 0;
+  top: 100%;
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  margin-top: 8px;
+  z-index: 10000;
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 /* Modal */
@@ -692,6 +768,49 @@ body {
   opacity: 0.8;
 }
 
+/* Status Badges */
+.status-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.status-pending {
+  background-color: #fbbf24;
+  color: #78350f;
+}
+
+.status-processing {
+  background-color: #60a5fa;
+  color: #1e3a8a;
+}
+
+.status-completed {
+  background-color: #34d399;
+  color: #064e3b;
+}
+
+.status-failed {
+  background-color: #f87171;
+  color: #7f1d1d;
+}
+
+/* Knowledge Sections */
+.knowledge-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.knowledge-section h5 {
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .sidebar {
@@ -715,4 +834,104 @@ body {
   .cards-list {
     grid-template-columns: 1fr;
   }
+}
+
+/* Toast Notifications */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toast {
+  padding: 12px 20px;
+  border-radius: 8px;
+  color: white;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  animation: slideInRight 0.3s ease-out;
+  min-width: 250px;
+}
+
+.toast.success {
+  background-color: var(--success-color);
+}
+
+.toast.error {
+  background-color: var(--danger-color);
+}
+
+.toast.info {
+  background-color: var(--primary-color);
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(400px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Custom Confirm Dialog */
+.modal-confirm {
+  max-width: 400px;
+  text-align: center;
+  padding: 2rem;
+}
+
+.confirm-icon {
+  font-size: 3rem;
+  color: var(--danger-color);
+  margin-bottom: 1rem;
+}
+
+.modal-confirm h3 {
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.modal-confirm p {
+  color: var(--text-secondary);
+  margin-bottom: 1.5rem;
+}
+
+.confirm-buttons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+}
+
+.confirm-buttons button {
+  padding: 0.75rem 2rem;
+  border-radius: 6px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-danger {
+  background-color: var(--danger-color);
+  color: white;
+  border: none;
+}
+
+.btn-danger:hover {
+  background-color: #dc2626;
+  transform: translateY(-1px);
+}
+
+.confirm-buttons .btn-secondary {
+  flex: 1;
+}
+
+.confirm-buttons .btn-danger {
+  flex: 1;
 }

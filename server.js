@@ -5,12 +5,40 @@ import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from './db.js';
 import { authenticateToken, requireAdmin } from './auth.js';
+import multer from 'multer';
+import fs from 'fs';
+import path from 'path';
+import { initQdrant, upsertVectors, searchSimilarVectors, deletePointsByFilter, qdrant } from './qdrant.js';
+import { splitTextIntoChunks, extractTextFromBuffer } from './text-splitter.js';
+import { getEmbedding } from './embeddings.js';
 
 dotenv.config();
 
+// Initialize upload directory
+const uploadsDir = path.join(process.cwd(), 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
+});
+
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
+
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
 // ==================== Auth Routes ====================
@@ -486,6 +514,160 @@ app.get('/api/admin/knowledge/search', authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== Document Management Routes ====================
+
+// Upload document
+app.post('/api/admin/documents/upload', authenticateToken, requireAdmin, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: '没有上传文件' });
+    }
+
+    const { knowledge_base_id } = req.body;
+    if (!knowledge_base_id) {
+      return res.status(400).json({ error: '缺少知识库ID' });
+    }
+
+    // Save document record
+    const [result] = await pool.query(
+      'INSERT INTO documents (filename, original_name, file_path, file_size, knowledge_base_id, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.file.filename, req.file.originalname, req.file.path, req.file.size, knowledge_base_id, req.user.id]
+    );
+
+    const documentId = result.insertId;
+
+    // Process document asynchronously
+    processDocument(documentId, req.file.path).catch(error => {
+      console.error('Document processing error:', error);
+      pool.query(
+        'UPDATE documents SET status = ?, error_message = ? WHERE id = ?',
+        ['failed', error.message, documentId]
+      );
+    });
+
+    res.json({ 
+      message: '文件上传成功，正在处理',
+      document_id: documentId
+    });
+  } catch (error) {
+    console.error('Upload document error:', error);
+    res.status(500).json({ error: '上传文档失败' });
+  }
+});
+
+// Get documents by knowledge base
+app.get('/api/admin/knowledge-bases/:id/documents', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const baseId = req.params.id;
+    const [documents] = await pool.query(
+      'SELECT * FROM documents WHERE knowledge_base_id = ? ORDER BY uploaded_at DESC',
+      [baseId]
+    );
+    res.json(documents);
+  } catch (error) {
+    res.status(500).json({ error: '获取文档列表失败' });
+  }
+});
+
+// Delete document
+app.delete('/api/admin/documents/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const docId = req.params.id;
+    
+    // Get document info
+    const [docs] = await pool.query('SELECT * FROM documents WHERE id = ?', [docId]);
+    if (docs.length === 0) {
+      return res.status(404).json({ error: '文档不存在' });
+    }
+
+    const doc = docs[0];
+
+    // Delete chunks and their vectors from Qdrant
+    const [chunks] = await pool.query('SELECT vector_id FROM document_chunks WHERE document_id = ?', [docId]);
+    for (const chunk of chunks) {
+      if (chunk.vector_id) {
+        await qdrant.delete('knowledge_vectors', {
+          wait: true,
+          points: [chunk.vector_id]
+        });
+      }
+    }
+
+    // Delete document record (cascades to chunks)
+    await pool.query('DELETE FROM documents WHERE id = ?', [docId]);
+
+    // Delete physical file
+    if (doc.file_path) {
+      try {
+        fs.unlinkSync(doc.file_path);
+      } catch (e) {
+        console.error('Delete file error:', e);
+      }
+    }
+
+    res.json({ message: '文档已删除' });
+  } catch (error) {
+    console.error('Delete document error:', error);
+    res.status(500).json({ error: '删除文档失败' });
+  }
+});
+
+// Process document: read, split, embed, store in Qdrant
+async function processDocument(documentId, filePath) {
+  try {
+    // Update status to processing
+    await pool.query('UPDATE documents SET status = ? WHERE id = ?', ['processing', documentId]);
+
+    // Read file content
+    const content = fs.readFileSync(filePath, 'utf-8');
+
+    // Split into chunks
+    const chunks = splitTextIntoChunks(content);
+
+    // Generate embeddings for each chunk
+    const { getEmbeddings } = await import('./embeddings.js');
+    const embeddings = await getEmbeddings(chunks);
+
+    // Store in Qdrant
+    const points = embeddings.map((embedding, index) => ({
+      id: `${documentId}-${index}`,
+      vector: embedding,
+      payload: {
+        document_id: documentId,
+        chunk_index: index,
+        content: chunks[index]
+      }
+    }));
+
+    // Batch upsert to Qdrant
+    const batchSize = 100;
+    for (let i = 0; i < points.length; i += batchSize) {
+      const batch = points.slice(i, i + batchSize);
+      await upsertVectors(batch);
+    }
+
+    // Save chunks to database
+    for (let i = 0; i < chunks.length; i++) {
+      await pool.query(
+        'INSERT INTO document_chunks (document_id, chunk_index, content, vector_id) VALUES (?, ?, ?, ?)',
+        [documentId, i, chunks[i], `${documentId}-${i}`]
+      );
+    }
+
+    // Update status to completed
+    await pool.query('UPDATE documents SET status = ? WHERE id = ?', ['completed', documentId]);
+
+    console.log(`Document ${documentId} processed successfully: ${chunks.length} chunks`);
+  } catch (error) {
+    console.error('Process document error:', error);
+    await pool.query(
+      'UPDATE documents SET status = ?, error_message = ? WHERE id = ?',
+      ['failed', error.message, documentId]
+    );
+    throw error;
+  }
+}
+
 // ==================== Conversation Routes ====================
 
 app.get('/api/conversations', authenticateToken, async (req, res) => {
@@ -502,7 +684,20 @@ app.get('/api/conversations', authenticateToken, async (req, res) => {
 
 app.post('/api/conversations', authenticateToken, async (req, res) => {
   try {
-    const { title = '新对话' } = req.body;
+    // Generate unique title based on timestamp if not provided
+    const now = new Date();
+    const timestamp = now.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    });
+    const defaultTitle = `对话 ${timestamp}`;
+    const { title = defaultTitle } = req.body;
+    
     const [result] = await pool.query(
       'INSERT INTO conversations (user_id, title) VALUES (?, ?)',
       [req.user.id, title]
