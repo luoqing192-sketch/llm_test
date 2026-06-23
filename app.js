@@ -493,8 +493,9 @@ app.post('/api/admin/knowledge-bases/:id/items', authenticateToken, requireAdmin
 
     // Sync to Qdrant: embed the content and upsert
     try {
+      const { apiKey, baseURL } = await getEmbeddingConfig();
       const textToEmbed = `${title}\n${content}${keywords ? '\n关键词: ' + keywords : ''}`;
-      const embedding = await getEmbedding(textToEmbed);
+      const embedding = await getEmbedding(textToEmbed, apiKey, baseURL);
       await upsertVectors([{
         id: `ki-${newItem.id}`,
         vector: embedding,
@@ -541,8 +542,9 @@ app.put('/api/admin/knowledge-items/:id', authenticateToken, requireAdmin, async
       );
       const kbName = bases.length > 0 ? bases[0].name : '';
 
+      const { apiKey, baseURL } = await getEmbeddingConfig();
       const textToEmbed = `${title}\n${content}${keywords ? '\n关键词: ' + keywords : ''}`;
-      const embedding = await getEmbedding(textToEmbed);
+      const embedding = await getEmbedding(textToEmbed, apiKey, baseURL);
       await upsertVectors([{
         id: `ki-${itemId}`,
         vector: embedding,
@@ -755,7 +757,8 @@ async function processDocument(documentId, filePath, knowledgeBaseId) {
     const chunks = splitTextIntoChunks(content);
 
     // Generate embeddings for each chunk
-    const embeddings = await getEmbeddings(chunks);
+    const { apiKey, baseURL } = await getEmbeddingConfig();
+    const embeddings = await getEmbeddings(chunks, apiKey, baseURL);
 
     // Store in Qdrant with enhanced metadata
     const points = embeddings.map((embedding, index) => ({
@@ -902,6 +905,15 @@ async function getActivePrompt() {
   return prompts.length > 0 ? prompts[0] : null;
 }
 
+// 从 DB settings 读取 embedding 所需的 API Key / Base URL
+async function getEmbeddingConfig() {
+  const settings = await getLLMSettings();
+  return {
+    apiKey: settings.llm_api_key || process.env.LLM_API_KEY,
+    baseURL: settings.llm_base_url || process.env.LLM_BASE_URL,
+  };
+}
+
 // RAG: Search knowledge using Qdrant vector similarity
 async function searchKnowledge(query) {
   const settings = await getLLMSettings();
@@ -910,7 +922,8 @@ async function searchKnowledge(query) {
 
   try {
     // 1. Embed the query text
-    const queryVector = await getEmbedding(query);
+    const { apiKey, baseURL } = await getEmbeddingConfig();
+    const queryVector = await getEmbedding(query, apiKey, baseURL);
 
     // 2. Search Qdrant for similar vectors
     const results = await searchSimilarVectors(queryVector, limit, minScore);
