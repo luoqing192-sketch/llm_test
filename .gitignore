@@ -3,3 +3,5 @@ node_modules/
 chat-app.log
 .DS_Store
 *.log
+frontend/dist/
+uploads/

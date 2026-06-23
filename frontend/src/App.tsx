@@ -1,19 +1,22 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
+import ProtectedRoute from '@/components/ProtectedRoute'
+import AdminRoute from '@/components/AdminRoute'
+import LoginPage from '@/pages/LoginPage'
+import ChatPage from '@/pages/ChatPage'
+import AdminPage from '@/pages/AdminPage'
 
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<HomePage />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route element={<ProtectedRoute />}>
+        <Route path="/" element={<ChatPage />} />
+        <Route element={<AdminRoute />}>
+          <Route path="/admin" element={<AdminPage />} />
+        </Route>
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
-  )
-}
-
-function HomePage() {
-  return (
-    <div style={{ padding: 24 }}>
-      <h1>Welcome</h1>
-      <p>React 18 + TypeScript + Vite + Ant Design</p>
-    </div>
   )
 }
 

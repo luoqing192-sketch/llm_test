@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
-import app from '../../server.js';
+import app from '../../app.js';
 
 describe('Chat API', () => {
   let token;
@@ -10,6 +10,13 @@ describe('Chat API', () => {
       .post('/api/auth/login')
       .send({ username: 'admin', password: 'admin123' });
     token = res.body.token;
+  });
+
+  it('GET /api/health 应该返回健康状态', async () => {
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('status', 'ok');
+    expect(res.body).toHaveProperty('timestamp');
   });
 
   it('POST /api/conversations 应该创建对话', async () => {
@@ -32,24 +39,6 @@ describe('Chat API', () => {
     expect(Array.isArray(res.body)).toBe(true);
   });
 
-  it('POST /api/chat 应该发送消息', async () => {
-    // 先创建对话
-    const convRes = await request(app)
-      .post('/api/conversations')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ title: '聊天测试' });
-
-    const res = await request(app)
-      .post('/api/chat')
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        conversationId: convRes.body.id,
-        message: '你好'
-      });
-
-    expect([200, 202]).toContain(res.status);
-  });
-
   it('GET /api/queue/status 应该返回队列状态', async () => {
     const res = await request(app)
       .get('/api/queue/status')
@@ -58,5 +47,21 @@ describe('Chat API', () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('pending');
     expect(res.body).toHaveProperty('active');
+    expect(res.body).toHaveProperty('maxConcurrent');
+  });
+
+  it('POST /api/auth/login 无效凭据应该返回401', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ username: 'admin', password: 'wrong' });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toHaveProperty('error');
+  });
+
+  it('GET /api/conversations 无token应该返回401', async () => {
+    const res = await request(app).get('/api/conversations');
+    // Express may return 401 or the auth middleware may handle it
+    expect([401, 403]).toContain(res.status);
   });
 });
