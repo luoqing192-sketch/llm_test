@@ -907,12 +907,14 @@ async function getActivePrompt() {
   return prompts.length > 0 ? prompts[0] : null;
 }
 
-// 从 DB settings 读取 embedding 所需的 API Key / Base URL
+// 从 DB settings / 环境变量读取 embedding 所需的 API Key / Base URL
+// embedding 需要独立的 OpenAI 兼容 baseURL —— chat 的 llm_base_url 现在是
+// 完整端点 URL（如 Anthropic /v1/messages），不能复用，必须用 EMBEDDING_BASE_URL
 async function getEmbeddingConfig() {
   const settings = await getLLMSettings();
   return {
-    apiKey: settings.llm_api_key || process.env.LLM_API_KEY,
-    baseURL: settings.llm_base_url || process.env.LLM_BASE_URL,
+    apiKey: process.env.EMBEDDING_API_KEY || settings.llm_api_key || process.env.LLM_API_KEY,
+    baseURL: process.env.EMBEDDING_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
   };
 }
 

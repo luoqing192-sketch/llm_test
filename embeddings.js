@@ -8,8 +8,8 @@ let _client = null;
 
 function getClient(apiKey, baseURL) {
   // 每次检查 key 是否变了（管理后台可能更新）
-  const key = apiKey || process.env.LLM_API_KEY;
-  const url = baseURL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
+  const key = apiKey || process.env.EMBEDDING_API_KEY || process.env.LLM_API_KEY;
+  const url = baseURL || process.env.EMBEDDING_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1';
 
   if (!_client || _client._config_key !== key || _client._config_url !== url) {
     if (!key) {
