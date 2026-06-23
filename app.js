@@ -913,6 +913,7 @@ async function classifyQuery(message) {
     }
 
     const data = await response.json();
+    console.log('[classifyQuery] LLM 原始响应:', JSON.stringify(data).substring(0, 500));
     // 兼容 OpenAI 格式（choices[0].message.content）和 Anthropic 格式（content[0].text）
     const content = (
       data.choices?.[0]?.message?.content ||
