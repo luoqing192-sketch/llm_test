@@ -3,8 +3,18 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+// 启动期校验：缺少数据库配置时直接报错，避免运行到登录才抛误导性的 500
+const requiredDbVars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_DATABASE'];
+const missingDbVars = requiredDbVars.filter((v) => !process.env[v]);
+if (missingDbVars.length > 0) {
+  console.error(
+    `❌ 数据库配置缺失: ${missingDbVars.join(', ')}。` +
+      `请确认 .env 文件存在且已正确填写（参考 .env.production）。`
+  );
+}
+
 const pool = mysql.createPool({
-  host: process.env.MYSQL_HOST,
+  host: process.env.MYSQL_HOST || 'localhost',
   user: process.env.MYSQL_USER,
   password: process.env.MYSQL_PASSWORD,
   database: process.env.MYSQL_DATABASE,
