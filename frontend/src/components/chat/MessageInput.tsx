@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { Input, Button, Upload, message } from 'antd';
 import { SendOutlined, PaperClipOutlined } from '@ant-design/icons';
+import { useQueryClient } from '@tanstack/react-query';
 import { useChatStore } from '@/stores/chatStore';
 import { streamChat } from '@/services/sse';
 import { chatApi } from '@/services/api';
@@ -10,6 +11,7 @@ const { TextArea } = Input;
 export default function MessageInput() {
   const [inputValue, setInputValue] = useState('');
   const [uploading, setUploading] = useState(false);
+  const queryClient = useQueryClient();
   const {
     currentConversationId,
     isStreaming,
@@ -47,10 +49,13 @@ export default function MessageInput() {
       },
       onDone: () => {
         finalizeStreaming();
+        queryClient.invalidateQueries({ queryKey: ['messages', currentConversationId] });
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
       },
       onError: (error) => {
         message.error(error);
         finalizeStreaming();
+        queryClient.invalidateQueries({ queryKey: ['messages', currentConversationId] });
       },
       onQueueStatus: (pending, active) => {
         setQueueStatus(pending, active);
