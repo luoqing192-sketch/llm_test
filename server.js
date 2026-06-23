@@ -30,20 +30,12 @@ if (!fs.existsSync(frontendIndexPath)) {
 }
 
 import app from './app.js';
-import { initQdrant } from './qdrant.js';
 import { ensureAdminUser } from './init-admin.js';
 
 const PORT = process.env.PORT || 3000;
 
 async function start() {
-  // 确保 admin 账户存在
   await ensureAdminUser();
-
-  try {
-    await initQdrant();
-  } catch (error) {
-    console.error('⚠️ Qdrant initialization failed (will retry on first request):', error.message);
-  }
 
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);

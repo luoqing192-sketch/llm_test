@@ -9,10 +9,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { upsertVectors, searchSimilarVectors, deletePointsByFilter, qdrant } from './qdrant.js';
 import { splitTextIntoChunks, extractTextFromBuffer } from './text-splitter.js';
-import { getEmbedding } from './embeddings.js';
-import { getEmbeddings } from './embeddings.js';
 import llmQueue from './queue/llm-queue.js';
 
 dotenv.config();
@@ -489,33 +486,6 @@ app.post('/api/admin/knowledge-bases/:id/items', authenticateToken, requireAdmin
     const [item] = await pool.query('SELECT * FROM knowledge_items WHERE id = ?', [result.insertId]);
     const newItem = item[0];
 
-    // Get knowledge base name for Qdrant payload
-    const [bases] = await pool.query('SELECT name FROM knowledge_bases WHERE id = ?', [baseId]);
-    const kbName = bases.length > 0 ? bases[0].name : '';
-
-    // Sync to Qdrant: embed the content and upsert
-    try {
-      const { apiKey, baseURL } = await getEmbeddingConfig();
-      const textToEmbed = `${title}\n${content}${keywords ? '\n关键词: ' + keywords : ''}`;
-      const embedding = await getEmbedding(textToEmbed, apiKey, baseURL);
-      await upsertVectors([{
-        id: `ki-${newItem.id}`,
-        vector: embedding,
-        payload: {
-          knowledge_item_id: newItem.id,
-          knowledge_base_id: parseInt(baseId),
-          knowledge_base_name: kbName,
-          title: title,
-          content: content,
-          keywords: keywords,
-          type: 'knowledge_item',
-        }
-      }]);
-    } catch (embedError) {
-      console.error('Qdrant sync error (create item):', embedError);
-      // Don't fail the request — item is saved in DB
-    }
-
     res.json(newItem);
   } catch (error) {
     console.error('Create knowledge item error:', error);
@@ -536,34 +506,6 @@ app.put('/api/admin/knowledge-items/:id', authenticateToken, requireAdmin, async
     const [item] = await pool.query('SELECT * FROM knowledge_items WHERE id = ?', [itemId]);
     const updatedItem = item[0];
 
-    // Sync to Qdrant: re-embed and upsert
-    try {
-      const [bases] = await pool.query(
-        'SELECT kb.name FROM knowledge_bases kb JOIN knowledge_items ki ON ki.knowledge_base_id = kb.id WHERE ki.id = ?',
-        [itemId]
-      );
-      const kbName = bases.length > 0 ? bases[0].name : '';
-
-      const { apiKey, baseURL } = await getEmbeddingConfig();
-      const textToEmbed = `${title}\n${content}${keywords ? '\n关键词: ' + keywords : ''}`;
-      const embedding = await getEmbedding(textToEmbed, apiKey, baseURL);
-      await upsertVectors([{
-        id: `ki-${itemId}`,
-        vector: embedding,
-        payload: {
-          knowledge_item_id: parseInt(itemId),
-          knowledge_base_id: updatedItem.knowledge_base_id,
-          knowledge_base_name: kbName,
-          title: title,
-          content: content,
-          keywords: keywords,
-          type: 'knowledge_item',
-        }
-      }]);
-    } catch (embedError) {
-      console.error('Qdrant sync error (update item):', embedError);
-    }
-
     res.json(updatedItem);
   } catch (error) {
     res.status(500).json({ error: '更新知识条目失败' });
@@ -573,17 +515,6 @@ app.put('/api/admin/knowledge-items/:id', authenticateToken, requireAdmin, async
 app.delete('/api/admin/knowledge-items/:id', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const itemId = req.params.id;
-
-    // Delete from Qdrant first
-    try {
-      await qdrant.delete('knowledge_vectors', {
-        wait: true,
-        points: [`ki-${itemId}`],
-      });
-    } catch (qdrantError) {
-      console.error('Qdrant delete error:', qdrantError);
-    }
-
     await pool.query('DELETE FROM knowledge_items WHERE id = ?', [itemId]);
     res.json({ message: '知识条目已删除' });
   } catch (error) {
@@ -706,17 +637,6 @@ app.delete('/api/admin/documents/:id', authenticateToken, requireAdmin, async (r
 
     const doc = docs[0];
 
-    // Delete chunks and their vectors from Qdrant
-    const [chunks] = await pool.query('SELECT vector_id FROM document_chunks WHERE document_id = ?', [docId]);
-    for (const chunk of chunks) {
-      if (chunk.vector_id) {
-        await qdrant.delete('knowledge_vectors', {
-          wait: true,
-          points: [chunk.vector_id]
-        });
-      }
-    }
-
     // Delete document record (cascades to chunks)
     await pool.query('DELETE FROM documents WHERE id = ?', [docId]);
 
@@ -736,66 +656,23 @@ app.delete('/api/admin/documents/:id', authenticateToken, requireAdmin, async (r
   }
 });
 
-// Process document: read, split, embed, store in Qdrant (enhanced with metadata)
+// Process document: read, split, store chunks in MySQL
 async function processDocument(documentId, filePath, knowledgeBaseId) {
   try {
-    // Update status to processing
     await pool.query('UPDATE documents SET status = ? WHERE id = ?', ['processing', documentId]);
 
-    // Get document info and knowledge base name
-    const [docs] = await pool.query('SELECT * FROM documents WHERE id = ?', [documentId]);
-    const doc = docs[0];
-
-    let kbName = '';
-    if (knowledgeBaseId) {
-      const [bases] = await pool.query('SELECT name FROM knowledge_bases WHERE id = ?', [knowledgeBaseId]);
-      kbName = bases.length > 0 ? bases[0].name : '';
-    }
-
-    // Read file content
     const content = fs.readFileSync(filePath, 'utf-8');
-
-    // Split into chunks
     const chunks = splitTextIntoChunks(content);
 
-    // Generate embeddings for each chunk
-    const { apiKey, baseURL } = await getEmbeddingConfig();
-    const embeddings = await getEmbeddings(chunks, apiKey, baseURL);
-
-    // Store in Qdrant with enhanced metadata
-    const points = embeddings.map((embedding, index) => ({
-      id: `${documentId}-${index}`,
-      vector: embedding,
-      payload: {
-        document_id: documentId,
-        chunk_index: index,
-        content: chunks[index],
-        title: doc ? doc.original_name : '',
-        knowledge_base_id: knowledgeBaseId ? parseInt(knowledgeBaseId) : null,
-        knowledge_base_name: kbName,
-        type: 'document',
-      }
-    }));
-
-    // Batch upsert to Qdrant
-    const batchSize = 100;
-    for (let i = 0; i < points.length; i += batchSize) {
-      const batch = points.slice(i, i + batchSize);
-      await upsertVectors(batch);
-    }
-
-    // Save chunks to database
     for (let i = 0; i < chunks.length; i++) {
       await pool.query(
         'INSERT INTO document_chunks (document_id, chunk_index, content, vector_id) VALUES (?, ?, ?, ?)',
-        [documentId, i, chunks[i], `${documentId}-${i}`]
+        [documentId, i, chunks[i], null]
       );
     }
 
-    // Update status to completed
     await pool.query('UPDATE documents SET status = ? WHERE id = ?', ['completed', documentId]);
-
-    console.log(`Document ${documentId} processed successfully: ${chunks.length} chunks`);
+    console.log(`Document ${documentId} processed: ${chunks.length} chunks`);
   } catch (error) {
     console.error('Process document error:', error);
     await pool.query(
@@ -907,51 +784,97 @@ async function getActivePrompt() {
   return prompts.length > 0 ? prompts[0] : null;
 }
 
-// 从 DB settings / 环境变量读取 embedding 所需的 API Key / Base URL
-// embedding 需要独立的 OpenAI 兼容 baseURL —— chat 的 llm_base_url 现在是
-// 完整端点 URL（如 Anthropic /v1/messages），不能复用，必须用 EMBEDDING_BASE_URL
-async function getEmbeddingConfig() {
-  const settings = await getLLMSettings();
-  return {
-    apiKey: process.env.EMBEDDING_API_KEY || settings.llm_api_key || process.env.LLM_API_KEY,
-    baseURL: process.env.EMBEDDING_BASE_URL || process.env.LLM_BASE_URL || 'https://api.openai.com/v1',
-  };
+const WIKI_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'wiki');
+
+// 列出 wiki 目录下所有 .md 文件（文件名即标题）
+function listWikiFiles() {
+  try {
+    if (!fs.existsSync(WIKI_DIR)) return [];
+    return fs.readdirSync(WIKI_DIR)
+      .filter(f => f.endsWith('.md'))
+      .map(f => f.replace(/\.md$/, ''));
+  } catch {
+    return [];
+  }
 }
 
-// RAG: Search knowledge using Qdrant vector similarity
-// 返回 { items, fallback }：fallback=true 表示向量检索失败、本次未参考知识库
+// LLM Wiki 两步检索：
+// 第一步：让 LLM 看文件标题列表，选出与问题相关的文件
+// 第二步：读取选中文件的内容，作为知识上下文注入 prompt
 async function searchKnowledge(query) {
-  const settings = await getLLMSettings();
-  const limit = parseInt(settings.knowledge_retrieval_limit) || 3;
-  const minScore = parseFloat(settings.knowledge_min_score) || 0.7;
-
   try {
-    // 1. Embed the query text
-    const { apiKey, baseURL } = await getEmbeddingConfig();
-    const queryVector = await getEmbedding(query, apiKey, baseURL);
+    const titles = listWikiFiles();
+    if (titles.length === 0) {
+      return { items: [], fallback: false };
+    }
 
-    // 2. Search Qdrant for similar vectors
-    const results = await searchSimilarVectors(queryVector, limit, minScore);
+    // 第一步：LLM 从标题列表中选择相关文件
+    const settings = await getLLMSettings();
+    const response = await fetch(settings.llm_base_url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.llm_api_key}`,
+      },
+      body: JSON.stringify({
+        model: settings.llm_model,
+        stream: false,
+        max_tokens: 200,
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是一个知识库文件选择器。根据用户的问题，从下面的文件标题列表中选出可能包含相关信息的文件。' +
+              '只返回文件标题，每行一个，不要加序号或其他标记。如果没有相关文件，返回空。\n\n' +
+              '可用文件：\n' + titles.map(t => `- ${t}`).join('\n')
+          },
+          { role: 'user', content: query },
+        ],
+      }),
+    });
 
-    // 3. Map results to knowledge item format
-    return {
-      items: results.map(r => ({
-        title: r.payload?.title || (r.payload?.content || '').substring(0, 50),
-        content: r.payload?.content || '',
-        knowledge_base_name: r.payload?.knowledge_base_name || '知识库',
-        relevance_score: r.score,
-      })),
-      fallback: false,
-    };
+    if (!response.ok) {
+      console.error('Wiki file selection error:', response.status);
+      return { items: [], fallback: true };
+    }
+
+    const data = await response.json();
+    const llmAnswer = (data.choices?.[0]?.message?.content || '').trim();
+
+    if (!llmAnswer) {
+      return { items: [], fallback: false };
+    }
+
+    // 解析 LLM 返回的文件标题列表
+    const selectedTitles = llmAnswer
+      .split('\n')
+      .map(line => line.replace(/^[-*•\d.)\s]+/, '').trim())
+      .filter(t => t && titles.includes(t));
+
+    if (selectedTitles.length === 0) {
+      return { items: [], fallback: false };
+    }
+
+    // 第二步：读取选中文件的内容
+    const items = selectedTitles.map(title => {
+      const filePath = path.join(WIKI_DIR, `${title}.md`);
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        return { title, content, knowledge_base_name: 'Wiki' };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+
+    return { items, fallback: false };
   } catch (error) {
-    // MySQL 不做检索降级：向量检索失败时直接返回空，由上层提示用户
-    console.error('Qdrant search error:', error);
+    console.error('Wiki search error:', error);
     return { items: [], fallback: true };
   }
 }
 
 // 意图分类：判断用户输入是闲聊还是需要检索工程知识库的问题
-// 返回 true 表示需要查 Qdrant，false 表示闲聊、直接调用大模型
+// 返回 true 表示需要查知识库，false 表示闲聊、直接调用大模型
 async function classifyQuery(message) {
   const settings = await getLLMSettings();
   try {
