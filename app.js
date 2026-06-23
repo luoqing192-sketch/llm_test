@@ -338,7 +338,7 @@ app.post('/api/admin/prompts/test', authenticateToken, requireAdmin, async (req,
       { role: 'user', content: testMessage }
     ];
 
-    const response = await fetch(`${normalizeLLMBaseUrl(settings.llm_base_url)}/v1/chat/completions`, {
+    const response = await fetch(settings.llm_base_url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -902,13 +902,6 @@ async function getLLMSettings() {
   return settingsMap;
 }
 
-// 规范化 LLM base_url：去掉末尾斜杠和重复的 /v1，
-// 避免拼出 …/v1/v1/chat/completions 导致 404。
-function normalizeLLMBaseUrl(url) {
-  if (!url) return url;
-  return url.replace(/\/+$/, '').replace(/\/v1$/i, '');
-}
-
 async function getActivePrompt() {
   const [prompts] = await pool.query('SELECT * FROM prompts WHERE is_active = true LIMIT 1');
   return prompts.length > 0 ? prompts[0] : null;
@@ -1062,7 +1055,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
     // Use LLM Queue for concurrency control
     await llmQueue.enqueue({}, async () => {
-      const response = await fetch(`${normalizeLLMBaseUrl(settings.llm_base_url)}/v1/chat/completions`, {
+      const response = await fetch(settings.llm_base_url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
