@@ -15,7 +15,6 @@ export default function MessageInput() {
   const {
     currentConversationId,
     isStreaming,
-    addMessage,
     setIsStreaming,
     setStreamingContent,
     appendStreamingContent,
@@ -31,13 +30,18 @@ export default function MessageInput() {
 
     setInputValue('');
 
-    addMessage({
+    // 乐观更新：直接写入 React Query cache，MessageList 立即显示
+    const userMessage = {
       id: Date.now(),
       conversation_id: currentConversationId,
-      role: 'user',
+      role: 'user' as const,
       content: text,
       created_at: new Date().toISOString(),
-    });
+    };
+    queryClient.setQueryData(
+      ['messages', currentConversationId],
+      (old: any[] | undefined) => [...(old || []), userMessage]
+    );
 
     setIsStreaming(true);
     setStreamingContent('');
