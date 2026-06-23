@@ -37,23 +37,24 @@ export default function AdminPage() {
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Header style={{
-        background: '#fff',
+        background: 'var(--bg-card)',
         padding: '0 24px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        borderBottom: '1px solid #f0f0f0',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.04)',
+        borderBottom: 'none',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>
             返回聊天
           </Button>
-          <Typography.Title level={4} style={{ margin: 0 }}>管理后台</Typography.Title>
+          <Typography.Title level={4} style={{ margin: 0, fontWeight: 600 }}>管理后台</Typography.Title>
         </div>
       </Header>
 
-      <Content style={{ padding: 24, background: '#f5f5f5' }}>
-        <div style={{ background: '#fff', borderRadius: 8, padding: 24 }}>
+      <Content style={{ padding: 24, background: 'var(--bg-main)' }}>
+        <div style={{ background: 'var(--bg-card)', borderRadius: 12, padding: 24 }}>
           <Tabs items={tabItems} />
         </div>
       </Content>

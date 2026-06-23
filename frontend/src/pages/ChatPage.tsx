@@ -12,7 +12,7 @@ export default function ChatPage() {
       <Sider
         width={280}
         style={{
-          background: '#1a1a2e',
+          background: 'linear-gradient(180deg, var(--sidebar-start) 0%, var(--sidebar-end) 100%)',
           height: '100vh',
           overflow: 'hidden',
         }}
@@ -20,7 +20,7 @@ export default function ChatPage() {
         <ConversationSidebar />
       </Sider>
 
-      <Content style={{ display: 'flex', flexDirection: 'column', background: '#fff' }}>
+      <Content style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-main)' }}>
         <QueueIndicator />
         <MessageList />
         <MessageInput />

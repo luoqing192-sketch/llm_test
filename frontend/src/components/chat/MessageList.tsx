@@ -10,7 +10,6 @@ export default function MessageList() {
   const { data: messages, isLoading } = useConversationMessages(currentConversationId);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to bottom
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
@@ -24,11 +23,25 @@ export default function MessageList() {
         display: 'flex',
         justifyContent: 'center',
         alignItems: 'center',
-        color: '#999',
+        color: 'var(--text-muted)',
       }}>
         <div style={{ textAlign: 'center' }}>
-          <RobotOutlined style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }} />
-          <div>选择或创建一个对话开始聊天</div>
+          <div style={{
+            width: 64,
+            height: 64,
+            borderRadius: 20,
+            background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            margin: '0 auto 20px',
+            opacity: 0.15,
+          }}>
+            <RobotOutlined style={{ fontSize: 28, color: '#fff' }} />
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-secondary)' }}>
+            选择或创建一个对话开始聊天
+          </div>
         </div>
       </div>
     );
@@ -53,24 +66,22 @@ export default function MessageList() {
       style={{
         flex: 1,
         overflow: 'auto',
-        padding: '16px 24px',
+        padding: '24px 32px',
       }}
     >
       {(messages || []).map((msg) => (
         <MessageBubble key={msg.id} role={msg.role} content={msg.content} time={msg.created_at} />
       ))}
 
-      {/* RAG 降级提示：仅在本轮流式期间出现 */}
       {isStreaming && ragNotice && (
         <Alert
           type="warning"
           showIcon
           message={ragNotice}
-          style={{ margin: '0 0 12px 52px', maxWidth: '70%' }}
+          style={{ margin: '0 0 12px 52px', maxWidth: '70%', borderRadius: 10 }}
         />
       )}
 
-      {/* Streaming response */}
       {isStreaming && (
         <MessageBubble
           role="assistant"
@@ -99,13 +110,14 @@ function MessageBubble({
     <div style={{
       display: 'flex',
       justifyContent: isUser ? 'flex-end' : 'flex-start',
-      marginBottom: 16,
+      marginBottom: 20,
     }}>
       {!isUser && (
         <Avatar
           icon={<RobotOutlined />}
+          size={36}
           style={{
-            backgroundColor: '#722ed1',
+            background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
             marginRight: 12,
             flexShrink: 0,
           }}
@@ -114,16 +126,20 @@ function MessageBubble({
 
       <div style={{ maxWidth: '70%' }}>
         <div style={{
-          padding: '10px 16px',
-          borderRadius: isUser ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
-          background: isUser ? '#1677ff' : '#f5f5f5',
-          color: isUser ? '#fff' : '#333',
-          lineHeight: 1.6,
+          padding: '12px 16px',
+          borderRadius: isUser ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+          background: isUser ? 'var(--user-bubble)' : 'var(--assistant-bubble)',
+          color: isUser ? '#fff' : 'var(--text-primary)',
+          lineHeight: 1.7,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
+          fontSize: 14,
+          boxShadow: isUser ? 'none' : '0 1px 3px rgba(0, 0, 0, 0.06)',
+          border: isUser ? 'none' : '1px solid var(--border)',
+          transition: 'all 0.15s ease',
         }}>
           {isStreaming && !content ? (
-            <LoadingOutlined style={{ color: '#999' }} />
+            <LoadingOutlined style={{ color: 'var(--text-muted)', fontSize: 16 }} />
           ) : (
             content
           )}
@@ -132,8 +148,8 @@ function MessageBubble({
           <Typography.Text
             style={{
               fontSize: 11,
-              color: '#999',
-              marginTop: 4,
+              color: 'var(--text-muted)',
+              marginTop: 6,
               display: 'block',
               textAlign: isUser ? 'right' : 'left',
             }}
@@ -146,8 +162,9 @@ function MessageBubble({
       {isUser && (
         <Avatar
           icon={<UserOutlined />}
+          size={36}
           style={{
-            backgroundColor: '#1677ff',
+            background: 'var(--primary)',
             marginLeft: 12,
             flexShrink: 0,
           }}

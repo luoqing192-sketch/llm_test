@@ -29,7 +29,6 @@ export default function MessageInput() {
 
     setInputValue('');
 
-    // Add user message locally for immediate display
     addMessage({
       id: Date.now(),
       conversation_id: currentConversationId,
@@ -38,7 +37,6 @@ export default function MessageInput() {
       created_at: new Date().toISOString(),
     });
 
-    // Start streaming
     setIsStreaming(true);
     setStreamingContent('');
     setRagNotice(null);
@@ -80,25 +78,36 @@ export default function MessageInput() {
     } finally {
       setUploading(false);
     }
-    return false; // prevent antd default upload
+    return false;
   };
 
   return (
     <div style={{
-      padding: '12px 24px',
-      borderTop: '1px solid #f0f0f0',
-      background: '#fff',
+      padding: '14px 32px 20px',
+      background: 'var(--bg-card)',
+      boxShadow: '0 -1px 4px rgba(0, 0, 0, 0.04)',
     }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+      <div style={{
+        display: 'flex',
+        gap: 10,
+        alignItems: 'flex-end',
+        background: 'var(--bg-main)',
+        borderRadius: 14,
+        padding: '8px 8px 8px 14px',
+        border: '1px solid var(--border)',
+        transition: 'border-color 0.2s ease',
+      }}>
         <Upload
           beforeUpload={handleFileUpload}
           showUploadList={false}
           accept=".txt,.pdf,.doc,.docx,.md,.csv"
         >
           <Button
+            type="text"
             icon={<PaperClipOutlined />}
             loading={uploading}
             disabled={!currentConversationId || isStreaming}
+            style={{ color: 'var(--text-muted)', border: 'none' }}
           />
         </Upload>
 
@@ -107,21 +116,34 @@ export default function MessageInput() {
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={currentConversationId ? '输入消息... (Enter 发送, Shift+Enter 换行)' : '请先选择一个对话'}
+          placeholder={currentConversationId ? '输入消息... (Enter 发送)' : '请先选择一个对话'}
           disabled={!currentConversationId || isStreaming}
           autoSize={{ minRows: 1, maxRows: 6 }}
-          style={{ flex: 1 }}
+          style={{
+            flex: 1,
+            border: 'none',
+            background: 'transparent',
+            boxShadow: 'none',
+            resize: 'none',
+            padding: '4px 0',
+            fontSize: 14,
+          }}
+          variant="borderless"
         />
 
         <Button
           type="primary"
-          icon={<SendOutlined />}
+          shape="circle"
+          icon={<SendOutlined style={{ fontSize: 14 }} />}
           onClick={handleSend}
           loading={isStreaming}
           disabled={!currentConversationId || !inputValue.trim() || isStreaming}
-        >
-          发送
-        </Button>
+          style={{
+            flexShrink: 0,
+            width: 36,
+            height: 36,
+          }}
+        />
       </div>
     </div>
   );
