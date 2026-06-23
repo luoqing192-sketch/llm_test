@@ -1024,6 +1024,9 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     llmMessages.push(...truncatedMessages);
 
     console.log(`[chat] activePrompt: ${activePrompt ? activePrompt.name : '无'} | needRetrieval: ${needRetrieval} | knowledgeItems: ${knowledgeItems.length} | systemMessage 长度: ${systemMessage.length} | 总消息数: ${llmMessages.length}`);
+    if (systemMessage) {
+      console.log(`[chat] systemMessage 内容: ${systemMessage.substring(0, 300)}`);
+    }
 
     // Set SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
