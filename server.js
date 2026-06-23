@@ -1,13 +1,13 @@
 import dotenv from 'dotenv';
-// 按脚本所在目录加载 .env，避免 cwd 不在项目根（如 restart.sh 切到 frontend/）时读不到
-dotenv.config({ path: path.join(__dirname, '.env') });
-
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// 按脚本所在目录加载 .env，避免 cwd 不在项目根（如 restart.sh 切到 frontend/）时读不到
+dotenv.config({ path: path.join(__dirname, '.env') });
+
 const frontendDistPath = path.join(__dirname, 'frontend', 'dist');
 const frontendIndexPath = path.join(frontendDistPath, 'index.html');
 

@@ -1,7 +1,12 @@
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// 按脚本所在目录加载 .env，与 cwd 解耦（db.js 在 import 阶段就会建连接池，
+// 此时 server.js 的 dotenv 还没执行，所以必须在此处用绝对路径加载）
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 // 启动期校验：缺少数据库配置时直接报错，避免运行到登录才抛误导性的 500
 const requiredDbVars = ['MYSQL_HOST', 'MYSQL_USER', 'MYSQL_DATABASE'];
