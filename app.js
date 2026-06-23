@@ -839,7 +839,13 @@ async function searchKnowledge(query) {
     }
 
     const data = await response.json();
-    const llmAnswer = (data.choices?.[0]?.message?.content || '').trim();
+    // 兼容 OpenAI 格式和 Anthropic 格式
+    const llmAnswer = (
+      data.choices?.[0]?.message?.content ||
+      data.content?.[0]?.text ||
+      ''
+    ).trim();
+    console.log(`[searchKnowledge] LLM 选择的文件: "${llmAnswer}"`);
 
     if (!llmAnswer) {
       return { items: [], fallback: false };
@@ -907,7 +913,13 @@ async function classifyQuery(message) {
     }
 
     const data = await response.json();
-    const content = (data.choices?.[0]?.message?.content || '').trim().toUpperCase();
+    // 兼容 OpenAI 格式（choices[0].message.content）和 Anthropic 格式（content[0].text）
+    const content = (
+      data.choices?.[0]?.message?.content ||
+      data.content?.[0]?.text ||
+      ''
+    ).trim().toUpperCase();
+    console.log(`[classifyQuery] 用户: "${message.substring(0, 30)}" → LLM 回复: "${content}" → ${content.startsWith('YES') ? '检索知识库' : '直接回复'}`);
     return content.startsWith('YES');
   } catch (error) {
     console.error('Classify query failed:', error.message);
@@ -1009,6 +1021,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       llmMessages.push({ role: 'system', content: systemMessage });
     }
     llmMessages.push(...truncatedMessages);
+
+    console.log(`[chat] activePrompt: ${activePrompt ? activePrompt.name : '无'} | needRetrieval: ${needRetrieval} | knowledgeItems: ${knowledgeItems.length} | systemMessage 长度: ${systemMessage.length} | 总消息数: ${llmMessages.length}`);
 
     // Set SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
