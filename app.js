@@ -549,45 +549,85 @@ app.get('/api/admin/knowledge/search', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== Document Management Routes ====================
+// ==================== Wiki File Management Routes ====================
 
-// Upload document (admin only)
-app.post('/api/admin/documents/upload', authenticateToken, requireAdmin, upload.single('file'), async (req, res) => {
+// List wiki files
+app.get('/api/admin/wiki', authenticateToken, async (req, res) => {
+  try {
+    if (!fs.existsSync(WIKI_DIR)) {
+      fs.mkdirSync(WIKI_DIR, { recursive: true });
+    }
+    const files = fs.readdirSync(WIKI_DIR)
+      .filter(f => f.endsWith('.md'))
+      .map(f => {
+        const stat = fs.statSync(path.join(WIKI_DIR, f));
+        return {
+          name: f.replace(/\.md$/, ''),
+          filename: f,
+          size: stat.size,
+          updated_at: stat.mtime.toISOString(),
+        };
+      })
+      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    res.json(files);
+  } catch (error) {
+    console.error('List wiki files error:', error);
+    res.status(500).json({ error: '获取 Wiki 文件列表失败' });
+  }
+});
+
+// Upload wiki file (.md → wiki/ directory)
+app.post('/api/admin/wiki/upload', authenticateToken, requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: '没有上传文件' });
     }
 
-    const { knowledge_base_id } = req.body;
-    if (!knowledge_base_id) {
-      return res.status(400).json({ error: '缺少知识库ID' });
+    if (!fs.existsSync(WIKI_DIR)) {
+      fs.mkdirSync(WIKI_DIR, { recursive: true });
     }
 
-    // Save document record
-    console.log(`[upload] 文件: ${req.file.originalname} | 大小: ${req.file.size} | 路径: ${req.file.path}`);
-    const [result] = await pool.query(
-      'INSERT INTO documents (filename, original_name, file_path, file_size, knowledge_base_id, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)',
-      [req.file.filename, req.file.originalname, req.file.path, req.file.size, knowledge_base_id, req.user.id]
-    );
+    const originalName = req.file.originalname;
+    const targetName = originalName.endsWith('.md') ? originalName : originalName + '.md';
+    const targetPath = path.join(WIKI_DIR, targetName);
 
-    const documentId = result.insertId;
+    // 从 multer 临时位置移到 wiki/ 目录
+    fs.renameSync(req.file.path, targetPath);
 
-    // Process document asynchronously
-    processDocument(documentId, req.file.path, knowledge_base_id).catch(error => {
-      console.error('Document processing error:', error);
-      pool.query(
-        'UPDATE documents SET status = ?, error_message = ? WHERE id = ?',
-        ['failed', error.message, documentId]
-      );
-    });
+    const stat = fs.statSync(targetPath);
+    console.log(`[wiki upload] 文件: ${targetName} | 大小: ${stat.size} | 路径: ${targetPath}`);
 
     res.json({
-      message: '文件上传成功，正在处理',
-      document_id: documentId
+      message: 'Wiki 文件上传成功',
+      file: {
+        name: targetName.replace(/\.md$/, ''),
+        filename: targetName,
+        size: stat.size,
+        updated_at: stat.mtime.toISOString(),
+      },
     });
   } catch (error) {
-    console.error('Upload document error:', error);
-    res.status(500).json({ error: '上传文档失败' });
+    console.error('Upload wiki file error:', error);
+    res.status(500).json({ error: '上传 Wiki 文件失败' });
+  }
+});
+
+// Delete wiki file
+app.delete('/api/admin/wiki/:filename', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const filename = decodeURIComponent(req.params.filename);
+    const targetName = filename.endsWith('.md') ? filename : filename + '.md';
+    const targetPath = path.join(WIKI_DIR, targetName);
+
+    if (!fs.existsSync(targetPath)) {
+      return res.status(404).json({ error: '文件不存在' });
+    }
+
+    fs.unlinkSync(targetPath);
+    res.json({ message: 'Wiki 文件已删除' });
+  } catch (error) {
+    console.error('Delete wiki file error:', error);
+    res.status(500).json({ error: '删除 Wiki 文件失败' });
   }
 });
 
@@ -613,79 +653,6 @@ app.post('/api/chat/upload', authenticateToken, upload.single('file'), async (re
     res.status(500).json({ error: '上传文件失败' });
   }
 });
-
-// Get documents by knowledge base
-app.get('/api/admin/knowledge-bases/:id/documents', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const baseId = req.params.id;
-    const [documents] = await pool.query(
-      'SELECT * FROM documents WHERE knowledge_base_id = ? ORDER BY uploaded_at DESC',
-      [baseId]
-    );
-    res.json(documents);
-  } catch (error) {
-    res.status(500).json({ error: '获取文档列表失败' });
-  }
-});
-
-// Delete document
-app.delete('/api/admin/documents/:id', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const docId = req.params.id;
-
-    // Get document info
-    const [docs] = await pool.query('SELECT * FROM documents WHERE id = ?', [docId]);
-    if (docs.length === 0) {
-      return res.status(404).json({ error: '文档不存在' });
-    }
-
-    const doc = docs[0];
-
-    // Delete document record (cascades to chunks)
-    await pool.query('DELETE FROM documents WHERE id = ?', [docId]);
-
-    // Delete physical file
-    if (doc.file_path) {
-      try {
-        fs.unlinkSync(doc.file_path);
-      } catch (e) {
-        console.error('Delete file error:', e);
-      }
-    }
-
-    res.json({ message: '文档已删除' });
-  } catch (error) {
-    console.error('Delete document error:', error);
-    res.status(500).json({ error: '删除文档失败' });
-  }
-});
-
-// Process document: read, split, store chunks in MySQL
-async function processDocument(documentId, filePath, knowledgeBaseId) {
-  try {
-    await pool.query('UPDATE documents SET status = ? WHERE id = ?', ['processing', documentId]);
-
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const chunks = splitTextIntoChunks(content);
-
-    for (let i = 0; i < chunks.length; i++) {
-      await pool.query(
-        'INSERT INTO document_chunks (document_id, chunk_index, content, vector_id) VALUES (?, ?, ?, ?)',
-        [documentId, i, chunks[i], null]
-      );
-    }
-
-    await pool.query('UPDATE documents SET status = ? WHERE id = ?', ['completed', documentId]);
-    console.log(`Document ${documentId} processed: ${chunks.length} chunks`);
-  } catch (error) {
-    console.error('Process document error:', error);
-    await pool.query(
-      'UPDATE documents SET status = ?, error_message = ? WHERE id = ?',
-      ['failed', error.message, documentId]
-    );
-    throw error;
-  }
-}
 
 // ==================== Conversation Routes ====================
 

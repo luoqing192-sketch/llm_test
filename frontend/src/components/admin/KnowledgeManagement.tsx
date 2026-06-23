@@ -5,47 +5,42 @@ import {
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, InboxOutlined,
-  CheckCircleOutlined, SyncOutlined, ClockCircleOutlined, CloseCircleOutlined,
+  FileMarkdownOutlined,
 } from '@ant-design/icons';
 import {
   useKnowledgeBases, useCreateKnowledgeBase, useDeleteKnowledgeBase,
   useKnowledgeItems, useCreateKnowledgeItem, useUpdateKnowledgeItem, useDeleteKnowledgeItem,
-  useDocuments, useUploadDocument, useDeleteDocument,
+  useWikiFiles, useUploadWikiFile, useDeleteWikiFile,
 } from '@/hooks/useAdminData';
-import type { KnowledgeBase, KnowledgeItem, DocItem } from '@/types';
+import type { KnowledgeBase, KnowledgeItem } from '@/types';
+import type { WikiFile } from '@/services/api';
 import dayjs from 'dayjs';
 
 const { TextArea } = Input;
 const { Dragger } = Upload;
 
 export default function KnowledgeManagement() {
-  // Knowledge Bases
   const { data: bases, isLoading: basesLoading } = useKnowledgeBases();
   const createBase = useCreateKnowledgeBase();
   const deleteBase = useDeleteKnowledgeBase();
 
-  // Selected base
   const [selectedBaseId, setSelectedBaseId] = useState<number | null>(null);
 
-  // 默认选中第一条知识库
   useEffect(() => {
     if (!selectedBaseId && bases && bases.length > 0) {
       setSelectedBaseId(bases[0].id);
     }
   }, [bases, selectedBaseId]);
 
-  // Knowledge Items
   const { data: items, isLoading: itemsLoading } = useKnowledgeItems(selectedBaseId);
   const createItem = useCreateKnowledgeItem();
   const updateItem = useUpdateKnowledgeItem();
   const deleteItem = useDeleteKnowledgeItem();
 
-  // Documents
-  const { data: documents, isLoading: docsLoading } = useDocuments(selectedBaseId);
-  const uploadDoc = useUploadDocument();
-  const deleteDoc = useDeleteDocument();
+  const { data: wikiFiles, isLoading: wikiLoading } = useWikiFiles();
+  const uploadWiki = useUploadWikiFile();
+  const deleteWiki = useDeleteWikiFile();
 
-  // Modals
   const [baseModalVisible, setBaseModalVisible] = useState(false);
   const [itemModalVisible, setItemModalVisible] = useState(false);
   const [editingItem, setEditingItem] = useState<KnowledgeItem | null>(null);
@@ -81,61 +76,54 @@ export default function KnowledgeManagement() {
     }
   };
 
-  const handleUploadDoc = async (file: File) => {
-    if (!selectedBaseId) {
-      message.warning('请先选择知识库');
+  const handleUploadWiki = async (file: File) => {
+    if (!file.name.endsWith('.md')) {
+      message.warning('仅支持 .md (Markdown) 文件');
       return false;
     }
     try {
-      await uploadDoc.mutateAsync({ file, baseId: selectedBaseId });
-      message.success('文件上传成功，正在处理');
+      await uploadWiki.mutateAsync(file);
+      message.success(`Wiki 文件 "${file.name}" 上传成功`);
     } catch {
       message.error('上传失败');
     }
     return false;
   };
 
-  const statusIcon: Record<string, React.ReactNode> = {
-    completed: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
-    processing: <SyncOutlined spin style={{ color: '#1677ff' }} />,
-    pending: <ClockCircleOutlined style={{ color: '#faad14' }} />,
-    failed: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
-  };
-
-  const docColumns = [
-    { title: '文件名', dataIndex: 'original_name', key: 'name' },
+  const wikiColumns = [
     {
-      title: '大小',
-      dataIndex: 'file_size',
-      key: 'size',
-      render: (s: number) => `${(s / 1024).toFixed(1)} KB`,
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      render: (status: string) => (
+      title: '标题',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string) => (
         <Space>
-          {statusIcon[status]}
-          <span>{status}</span>
+          <FileMarkdownOutlined style={{ color: 'var(--primary)' }} />
+          {name}
         </Space>
       ),
     },
     {
-      title: '上传时间',
-      dataIndex: 'uploaded_at',
+      title: '大小',
+      dataIndex: 'size',
+      key: 'size',
+      width: 100,
+      render: (s: number) => s < 1024 ? `${s} B` : `${(s / 1024).toFixed(1)} KB`,
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
       key: 'time',
+      width: 140,
       render: (t: string) => dayjs(t).format('MM-DD HH:mm'),
     },
     {
       title: '操作',
       key: 'action',
-      render: (_: unknown, record: DocItem) => (
+      width: 80,
+      render: (_: unknown, record: WikiFile) => (
         <Popconfirm
-          title="确定删除此文档？"
-          onConfirm={() => {
-            if (selectedBaseId) deleteDoc.mutate({ id: record.id, baseId: selectedBaseId });
-          }}
+          title="确定删除此 Wiki 文件？"
+          onConfirm={() => deleteWiki.mutate(record.filename)}
         >
           <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
         </Popconfirm>
@@ -187,9 +175,48 @@ export default function KnowledgeManagement() {
 
   return (
     <div>
+      {/* Wiki Files — LLM 检索的知识来源 */}
+      <Card
+        title={
+          <Space>
+            <FileMarkdownOutlined />
+            <span>Wiki 知识文件</span>
+          </Space>
+        }
+        size="small"
+        style={{ marginBottom: 24 }}
+        extra={
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            上传 .md 文件，聊天时 LLM 会自动检索相关文件内容
+          </Typography.Text>
+        }
+      >
+        <Dragger
+          beforeUpload={handleUploadWiki}
+          showUploadList={false}
+          accept=".md"
+          style={{ marginBottom: 16 }}
+        >
+          <p><InboxOutlined style={{ fontSize: 32, color: 'var(--primary)' }} /></p>
+          <p>点击或拖拽 .md 文件到此区域上传</p>
+          <p style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+            文件名即标题，上传后立即生效（无需重启）
+          </p>
+        </Dragger>
+
+        <Table
+          dataSource={wikiFiles || []}
+          columns={wikiColumns}
+          rowKey="filename"
+          loading={wikiLoading}
+          size="small"
+          pagination={{ pageSize: 10 }}
+        />
+      </Card>
+
+      {/* Knowledge Base / Items（MySQL 知识条目，可选） */}
       <Typography.Title level={5}>知识库管理</Typography.Title>
 
-      {/* Knowledge Base Selector */}
       <div style={{ marginBottom: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
         <Select
           placeholder="选择知识库"
@@ -219,63 +246,35 @@ export default function KnowledgeManagement() {
       </div>
 
       {selectedBaseId && (
-        <>
-          {/* Knowledge Items */}
-          <Card
-            title="知识条目"
-            size="small"
-            style={{ marginBottom: 16 }}
-            extra={
-              <Button
-                size="small"
-                type="primary"
-                icon={<PlusOutlined />}
-                onClick={() => {
-                  setEditingItem(null);
-                  itemForm.resetFields();
-                  setItemModalVisible(true);
-                }}
-              >
-                添加条目
-              </Button>
-            }
-          >
-            <Table
-              dataSource={items || []}
-              columns={itemColumns}
-              rowKey="id"
-              loading={itemsLoading}
+        <Card
+          title="知识条目"
+          size="small"
+          extra={
+            <Button
               size="small"
-              pagination={{ pageSize: 5 }}
-            />
-          </Card>
-
-          {/* Documents */}
-          <Card title="文档上传" size="small">
-            <Dragger
-              beforeUpload={handleUploadDoc}
-              showUploadList={false}
-              accept=".txt,.pdf,.doc,.docx,.md,.csv"
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setEditingItem(null);
+                itemForm.resetFields();
+                setItemModalVisible(true);
+              }}
             >
-              <p><InboxOutlined style={{ fontSize: 32, color: '#1677ff' }} /></p>
-              <p>点击或拖拽文件到此区域上传</p>
-              <p style={{ color: '#999', fontSize: 12 }}>支持 txt, pdf, doc, docx, md, csv 格式，最大 10MB</p>
-            </Dragger>
-
-            <Table
-              dataSource={documents || []}
-              columns={docColumns}
-              rowKey="id"
-              loading={docsLoading}
-              size="small"
-              style={{ marginTop: 16 }}
-              pagination={{ pageSize: 5 }}
-            />
-          </Card>
-        </>
+              添加条目
+            </Button>
+          }
+        >
+          <Table
+            dataSource={items || []}
+            columns={itemColumns}
+            rowKey="id"
+            loading={itemsLoading}
+            size="small"
+            pagination={{ pageSize: 5 }}
+          />
+        </Card>
       )}
 
-      {/* Create Knowledge Base Modal */}
       <Modal
         title="新建知识库"
         open={baseModalVisible}
@@ -293,7 +292,6 @@ export default function KnowledgeManagement() {
         </Form>
       </Modal>
 
-      {/* Create/Edit Knowledge Item Modal */}
       <Modal
         title={editingItem ? '编辑知识条目' : '添加知识条目'}
         open={itemModalVisible}

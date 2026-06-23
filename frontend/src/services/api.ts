@@ -8,7 +8,6 @@ import type {
   Prompt,
   KnowledgeBase,
   KnowledgeItem,
-  DocItem,
   QueueStatus,
 } from '@/types';
 
@@ -167,22 +166,28 @@ export const knowledgeItemsApi = {
     api.get<KnowledgeItem[]>('/admin/knowledge/search', { params: { query } }),
 };
 
-// ==================== Admin: Documents ====================
+// ==================== Admin: Wiki Files ====================
 
-export const documentsApi = {
-  list: (baseId: number) =>
-    api.get<DocItem[]>(`/admin/knowledge-bases/${baseId}/documents`),
+export interface WikiFile {
+  name: string;
+  filename: string;
+  size: number;
+  updated_at: string;
+}
 
-  upload: (file: File, knowledgeBaseId: number) => {
+export const wikiApi = {
+  list: () => api.get<WikiFile[]>('/admin/wiki'),
+
+  upload: (file: File) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('knowledge_base_id', String(knowledgeBaseId));
-    return api.post('/admin/documents/upload', formData, {
+    return api.post('/admin/wiki/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
 
-  delete: (id: number) => api.delete(`/admin/documents/${id}`),
+  delete: (filename: string) =>
+    api.delete(`/admin/wiki/${encodeURIComponent(filename)}`),
 };
 
 export default api;

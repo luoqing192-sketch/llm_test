@@ -5,7 +5,7 @@ import {
   promptsApi,
   knowledgeBasesApi,
   knowledgeItemsApi,
-  documentsApi,
+  wikiApi,
 } from '@/services/api';
 import type { LLMSettings, Prompt } from '@/types';
 
@@ -210,36 +210,31 @@ export function useDeleteKnowledgeItem() {
   });
 }
 
-// ==================== Documents ====================
+// ==================== Wiki Files ====================
 
-export function useDocuments(baseId: number | null) {
+export function useWikiFiles() {
   return useQuery({
-    queryKey: ['admin', 'documents', baseId],
-    queryFn: () =>
-      baseId ? documentsApi.list(baseId).then((r) => r.data) : [],
-    enabled: baseId !== null,
-    refetchInterval: 5000,
+    queryKey: ['admin', 'wiki'],
+    queryFn: () => wikiApi.list().then((r) => r.data),
   });
 }
 
-export function useUploadDocument() {
+export function useUploadWikiFile() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ file, baseId }: { file: File; baseId: number }) =>
-      documentsApi.upload(file, baseId),
-    onSuccess: (_, { baseId }) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'documents', baseId] });
+    mutationFn: (file: File) => wikiApi.upload(file),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'wiki'] });
     },
   });
 }
 
-export function useDeleteDocument() {
+export function useDeleteWikiFile() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, baseId }: { id: number; baseId: number }) =>
-      documentsApi.delete(id).then(() => baseId),
-    onSuccess: (baseId) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'documents', baseId] });
+    mutationFn: (filename: string) => wikiApi.delete(filename),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'wiki'] });
     },
   });
 }
