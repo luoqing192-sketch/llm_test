@@ -1,13 +1,14 @@
 #!/bin/bash
 
 # ============================================================
-# restart.sh - 重启 AI 聊天助手应用
+# restart.sh - 部署 & 重启 AI 聊天助手应用
 #
 # 用法:
-#   ./restart.sh              # 默认 production 环境
+#   ./restart.sh              # 拉代码 + 安装 + 构建 + 重启
 #   ./restart.sh development  # 指定环境
 #   ./restart.sh stop         # 只停止
 #   ./restart.sh status       # 查看状态
+#   ./restart.sh start        # 只启动（不拉代码）
 # ============================================================
 
 set -e
@@ -22,11 +23,73 @@ PORT=3000
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; }
+step()  { echo -e "\n${CYAN}━━━ $1 ━━━${NC}"; }
+
+# ==================== 拉取代码 ====================
+pull_code() {
+  step "1/4 拉取最新代码"
+  cd "$APP_DIR"
+
+  local branch
+  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+  info "当前分支: $branch"
+
+  local before after
+  before=$(git rev-parse HEAD 2>/dev/null)
+
+  git pull origin "$branch"
+  after=$(git rev-parse HEAD 2>/dev/null)
+
+  if [ "$before" = "$after" ]; then
+    info "已是最新，无新提交"
+  else
+    info "代码已更新: ${before:0:7} → ${after:0:7}"
+    git log --oneline "${before}..${after}" 2>/dev/null | head -5
+  fi
+}
+
+# ==================== 安装依赖 ====================
+install_deps() {
+  step "2/4 安装后端依赖"
+  cd "$APP_DIR"
+
+  if [ -f "package.json" ]; then
+    npm install --production=false
+    info "后端依赖安装完成"
+  else
+    warn "未找到 package.json，跳过"
+  fi
+}
+
+# ==================== 构建前端 ====================
+build_frontend() {
+  step "3/4 构建前端"
+  local frontend_dir="$APP_DIR/frontend"
+
+  if [ ! -d "$frontend_dir" ]; then
+    warn "frontend/ 目录不存在，跳过"
+    return
+  fi
+
+  cd "$frontend_dir"
+
+  # 安装前端依赖
+  if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
+    info "安装前端依赖..."
+    npm install
+  fi
+
+  # 始终重新构建（代码可能变了）
+  info "构建前端..."
+  npm run build
+  info "前端构建完成"
+}
 
 # ==================== 停止 ====================
 stop_app() {
@@ -39,7 +102,6 @@ stop_app() {
     if kill -0 "$pid" 2>/dev/null; then
       info "停止进程 PID=$pid ..."
       kill "$pid"
-      # 等待进程退出（最多 10 秒）
       for i in $(seq 1 10); do
         if ! kill -0 "$pid" 2>/dev/null; then
           killed=true
@@ -47,7 +109,6 @@ stop_app() {
         fi
         sleep 1
       done
-      # 还没退就强杀
       if ! $killed; then
         warn "进程未响应，强制终止"
         kill -9 "$pid" 2>/dev/null || true
@@ -80,7 +141,6 @@ show_status() {
     pid=$(cat "$PID_FILE")
     if kill -0 "$pid" 2>/dev/null; then
       info "应用运行中  PID=$pid  端口=$PORT  环境=$ENV"
-      # 健康检查
       if curl -sf "http://localhost:$PORT/api/health" > /dev/null 2>&1; then
         info "健康检查: OK"
       else
@@ -90,7 +150,6 @@ show_status() {
     fi
   fi
 
-  # 兜底查端口
   local port_pids
   port_pids=$(lsof -ti :"$PORT" 2>/dev/null || true)
   if [ -n "$port_pids" ]; then
@@ -103,7 +162,9 @@ show_status() {
 }
 
 # ==================== 启动 ====================
-start_app() {
+start_app_process() {
+  step "4/4 启动应用"
+
   # 检查端口占用
   local port_pids
   port_pids=$(lsof -ti :"$PORT" 2>/dev/null || true)
@@ -113,21 +174,6 @@ start_app() {
     sleep 1
   fi
 
-  # 构建前端
-  local frontend_dist="$APP_DIR/frontend/dist/index.html"
-  if [ ! -f "$frontend_dist" ]; then
-    info "前端未构建，正在构建..."
-    if [ ! -d "$APP_DIR/frontend/node_modules" ]; then
-      info "安装前端依赖..."
-      (cd "$APP_DIR/frontend" && npm install)
-    fi
-    (cd "$APP_DIR/frontend" && npm run build)
-    info "前端构建完成"
-  else
-    info "前端已就绪"
-  fi
-
-  # 启动
   export NODE_ENV="$ENV"
   export PORT="$PORT"
 
@@ -145,7 +191,6 @@ start_app() {
       info "日志文件: $LOG_FILE"
       return 0
     fi
-    # 检查进程是否还活着
     if ! kill -0 "$pid" 2>/dev/null; then
       echo ""
       error "启动失败，进程已退出。查看日志:"
@@ -161,6 +206,29 @@ start_app() {
   warn "启动超时（15秒），进程仍在运行 PID=$pid，请检查日志: $LOG_FILE"
 }
 
+# ==================== 完整部署流程 ====================
+deploy() {
+  echo -e "${CYAN}"
+  echo "╔══════════════════════════════════════╗"
+  echo "║     AI 聊天助手 - 部署 & 重启       ║"
+  echo "╚══════════════════════════════════════╝"
+  echo -e "${NC}"
+  info "环境: $ENV  目录: $APP_DIR"
+
+  # 停止旧进程
+  stop_app
+  sleep 1
+
+  # 拉代码 → 装依赖 → 构建 → 启动
+  pull_code
+  install_deps
+  build_frontend
+  start_app_process
+
+  echo ""
+  info "========== 部署完成 =========="
+}
+
 # ==================== 主逻辑 ====================
 case "$1" in
   stop)
@@ -169,28 +237,34 @@ case "$1" in
   status)
     show_status
     ;;
-  restart|"")
-    info "========== 重启应用 =========="
-    stop_app
-    sleep 1
-    start_app
-    ;;
   start)
-    start_app
+    start_app_process
+    ;;
+  restart|"")
+    deploy
+    ;;
+  pull)
+    pull_code
+    ;;
+  build)
+    build_frontend
     ;;
   *)
-    echo "用法: $0 {start|stop|restart|status} [environment]"
+    echo "用法: $0 {restart|start|stop|status|pull|build} [environment]"
     echo ""
-    echo "  restart (默认)  停止并重新启动"
-    echo "  start           启动应用"
+    echo "  restart (默认)  拉代码 + 安装依赖 + 构建前端 + 重启  ← 推荐"
+    echo "  start           只启动（不拉代码、不构建）"
     echo "  stop            停止应用"
     echo "  status          查看运行状态"
+    echo "  pull            只拉取代码"
+    echo "  build           只构建前端"
     echo ""
-    echo "环境变量: development | staging | production (默认 production)"
+    echo "环境: development | staging | production (默认 production)"
     echo ""
     echo "示例:"
-    echo "  ./restart.sh                # production 重启"
-    echo "  ./restart.sh development    # development 重启"
+    echo "  ./restart.sh                # 完整部署: pull → install → build → restart"
+    echo "  ./restart.sh development    # development 环境完整部署"
+    echo "  ./restart.sh start          # 仅启动"
     echo "  ./restart.sh stop           # 停止"
     echo "  ./restart.sh status         # 查状态"
     exit 1
