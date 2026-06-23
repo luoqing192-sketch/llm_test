@@ -165,6 +165,9 @@ show_status() {
 start_app_process() {
   step "4/4 启动应用"
 
+  # 回到项目根目录，确保 dotenv 能找到 .env（前面 build_frontend 切到了 frontend/）
+  cd "$APP_DIR"
+
   # 检查端口占用
   local port_pids
   port_pids=$(lsof -ti :"$PORT" 2>/dev/null || true)

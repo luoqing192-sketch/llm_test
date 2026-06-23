@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
-dotenv.config();
+// 按脚本所在目录加载 .env，避免 cwd 不在项目根（如 restart.sh 切到 frontend/）时读不到
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 import { execSync } from 'child_process';
 import fs from 'fs';
