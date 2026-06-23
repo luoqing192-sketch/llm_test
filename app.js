@@ -839,9 +839,11 @@ async function searchKnowledge(query) {
     }
 
     const data = await response.json();
-    // 兼容 OpenAI 格式和 Anthropic 格式
+    // 兼容 OpenAI/DeepSeek/Anthropic 多种响应格式
+    const msg = data.choices?.[0]?.message;
     const llmAnswer = (
-      data.choices?.[0]?.message?.content ||
+      msg?.content ||
+      msg?.reasoning_content ||
       data.content?.[0]?.text ||
       ''
     ).trim();
@@ -893,14 +895,15 @@ async function classifyQuery(message) {
       body: JSON.stringify({
         model: settings.llm_model,
         stream: false,
-        max_tokens: 5,
+        max_tokens: 32,
         messages: [
           {
             role: 'system',
             content:
               '你是一个意图分类器。判断用户输入是否是需要查询工程/技术知识库才能准确回答的问题。' +
               '若是技术、工程、产品、流程等具体问题，只回复 YES；' +
-              '若是闲聊、问候、寒暄或与知识库无关的日常问题，只回复 NO。'
+              '若是闲聊、问候、寒暄或与知识库无关的日常问题，只回复 NO。' +
+              '不要输出思考过程，直接回复 YES 或 NO。'
           },
           { role: 'user', content: message },
         ],
@@ -914,9 +917,11 @@ async function classifyQuery(message) {
 
     const data = await response.json();
     console.log('[classifyQuery] LLM 原始响应:', JSON.stringify(data).substring(0, 500));
-    // 兼容 OpenAI 格式（choices[0].message.content）和 Anthropic 格式（content[0].text）
+    // 兼容 OpenAI/DeepSeek/Anthropic 多种响应格式
+    const msg = data.choices?.[0]?.message;
     const content = (
-      data.choices?.[0]?.message?.content ||
+      msg?.content ||
+      msg?.reasoning_content ||
       data.content?.[0]?.text ||
       ''
     ).trim().toUpperCase();
