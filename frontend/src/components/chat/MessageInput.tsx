@@ -19,6 +19,7 @@ export default function MessageInput() {
     appendStreamingContent,
     finalizeStreaming,
     setQueueStatus,
+    setRagNotice,
   } = useChatStore();
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -40,6 +41,7 @@ export default function MessageInput() {
     // Start streaming
     setIsStreaming(true);
     setStreamingContent('');
+    setRagNotice(null);
 
     await streamChat(currentConversationId, text, {
       onChunk: (content) => {
@@ -54,6 +56,9 @@ export default function MessageInput() {
       },
       onQueueStatus: (pending, active) => {
         setQueueStatus(pending, active);
+      },
+      onNotice: (notice) => {
+        setRagNotice(notice);
       },
     });
   };

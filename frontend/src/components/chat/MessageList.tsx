@@ -1,12 +1,12 @@
 import { useEffect, useRef } from 'react';
-import { Typography, Avatar, Spin } from 'antd';
+import { Typography, Avatar, Spin, Alert } from 'antd';
 import { RobotOutlined, UserOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { useConversationMessages } from '@/hooks/useConversations';
 import dayjs from 'dayjs';
 
 export default function MessageList() {
-  const { currentConversationId, isStreaming, streamingContent } = useChatStore();
+  const { currentConversationId, isStreaming, streamingContent, ragNotice } = useChatStore();
   const { data: messages, isLoading } = useConversationMessages(currentConversationId);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -59,6 +59,16 @@ export default function MessageList() {
       {(messages || []).map((msg) => (
         <MessageBubble key={msg.id} role={msg.role} content={msg.content} time={msg.created_at} />
       ))}
+
+      {/* RAG 降级提示：仅在本轮流式期间出现 */}
+      {isStreaming && ragNotice && (
+        <Alert
+          type="warning"
+          showIcon
+          message={ragNotice}
+          style={{ margin: '0 0 12px 52px', maxWidth: '70%' }}
+        />
+      )}
 
       {/* Streaming response */}
       {isStreaming && (

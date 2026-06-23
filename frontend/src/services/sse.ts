@@ -5,6 +5,7 @@ export interface StreamCallbacks {
   onDone: () => void;
   onError: (error: string) => void;
   onQueueStatus?: (pending: number, active: number) => void;
+  onNotice?: (message: string) => void;
 }
 
 export async function streamChat(
@@ -60,6 +61,11 @@ export async function streamChat(
 
           if (event.type === 'queue' && callbacks.onQueueStatus) {
             callbacks.onQueueStatus(event.pending || 0, event.active || 0);
+            continue;
+          }
+
+          if (event.type === 'notice' && callbacks.onNotice) {
+            callbacks.onNotice(event.message || '');
             continue;
           }
 

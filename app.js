@@ -919,6 +919,7 @@ async function getEmbeddingConfig() {
 }
 
 // RAG: Search knowledge using Qdrant vector similarity
+// 返回 { items, fallback }：fallback=true 表示向量检索失败、已降级为 MySQL 全文检索
 async function searchKnowledge(query) {
   const settings = await getLLMSettings();
   const limit = parseInt(settings.knowledge_retrieval_limit) || 3;
@@ -933,12 +934,15 @@ async function searchKnowledge(query) {
     const results = await searchSimilarVectors(queryVector, limit, minScore);
 
     // 3. Map results to knowledge item format
-    return results.map(r => ({
-      title: r.payload?.title || (r.payload?.content || '').substring(0, 50),
-      content: r.payload?.content || '',
-      knowledge_base_name: r.payload?.knowledge_base_name || '知识库',
-      relevance_score: r.score,
-    }));
+    return {
+      items: results.map(r => ({
+        title: r.payload?.title || (r.payload?.content || '').substring(0, 50),
+        content: r.payload?.content || '',
+        knowledge_base_name: r.payload?.knowledge_base_name || '知识库',
+        relevance_score: r.score,
+      })),
+      fallback: false,
+    };
   } catch (error) {
     console.error('Qdrant search error, falling back to MySQL FULLTEXT:', error);
     // Fallback to MySQL FULLTEXT search
@@ -952,7 +956,7 @@ async function searchKnowledge(query) {
       ORDER BY relevance_score DESC
       LIMIT ?
     `, [query, query, minScore, limit]);
-    return items;
+    return { items, fallback: true };
   }
 }
 
@@ -996,8 +1000,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
     // Search knowledge base via Qdrant vector similarity
     let knowledgeItems = [];
+    let ragFallback = false;
     try {
-      knowledgeItems = await searchKnowledge(message);
+      const searchResult = await searchKnowledge(message);
+      knowledgeItems = searchResult.items;
+      ragFallback = searchResult.fallback;
     } catch (searchError) {
       console.error('Knowledge search error:', searchError);
     }
@@ -1053,6 +1060,11 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const queueStatus = llmQueue.getStatus();
     if (queueStatus.pending > 0) {
       res.write(`data: ${JSON.stringify({ type: 'queue', ...queueStatus })}\n\n`);
+    }
+
+    // 知识库向量检索失败、已降级为全文检索时，提示用户
+    if (ragFallback) {
+      res.write(`data: ${JSON.stringify({ type: 'notice', message: '知识库向量检索不可用，已降级为全文检索' })}\n\n`);
     }
 
     // Use LLM Queue for concurrency control

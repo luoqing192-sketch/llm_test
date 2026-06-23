@@ -6,6 +6,7 @@ interface ChatState {
   messages: Message[];
   isStreaming: boolean;
   streamingContent: string;
+  ragNotice: string | null;
   queuePending: number;
   queueActive: number;
 
@@ -15,6 +16,7 @@ interface ChatState {
   setIsStreaming: (streaming: boolean) => void;
   setStreamingContent: (content: string) => void;
   appendStreamingContent: (chunk: string) => void;
+  setRagNotice: (notice: string | null) => void;
   finalizeStreaming: () => void;
   setQueueStatus: (pending: number, active: number) => void;
   reset: () => void;
@@ -25,6 +27,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isStreaming: false,
   streamingContent: '',
+  ragNotice: null,
   queuePending: 0,
   queueActive: 0,
 
@@ -43,6 +46,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   appendStreamingContent: (chunk) =>
     set((state) => ({ streamingContent: state.streamingContent + chunk })),
 
+  setRagNotice: (notice) => set({ ragNotice: notice }),
+
   finalizeStreaming: () => {
     const { streamingContent, currentConversationId } = get();
     if (streamingContent && currentConversationId) {
@@ -56,10 +61,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((state) => ({
         messages: [...state.messages, assistantMessage],
         streamingContent: '',
+        ragNotice: null,
         isStreaming: false,
       }));
     } else {
-      set({ streamingContent: '', isStreaming: false });
+      set({ streamingContent: '', ragNotice: null, isStreaming: false });
     }
   },
 
@@ -72,6 +78,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       isStreaming: false,
       streamingContent: '',
+      ragNotice: null,
       queuePending: 0,
       queueActive: 0,
     }),
