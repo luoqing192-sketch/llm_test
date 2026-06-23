@@ -45,12 +45,13 @@ const upload = multer({
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use(express.static('public'));
 
-// Serve React frontend build
+// Serve React frontend build (primary frontend)
 const frontendDistPath = path.join(__dirname, 'frontend', 'dist');
 if (fs.existsSync(frontendDistPath)) {
   app.use(express.static(frontendDistPath));
+} else {
+  console.warn('⚠️ React frontend not built. Run: cd frontend && npm run build');
 }
 
 // ==================== Health Check ====================
@@ -1128,14 +1129,23 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 // ==================== SPA Fallback ====================
 
 // Serve React frontend for all non-API routes (SPA routing support)
-if (fs.existsSync(frontendDistPath)) {
-  app.get('*', (req, res, next) => {
-    // Skip API routes and static files
-    if (req.path.startsWith('/api/') || req.path.includes('.')) {
-      return next();
-    }
+app.get('*', (req, res, next) => {
+  // Skip API routes
+  if (req.path.startsWith('/api/')) {
+    return next();
+  }
+  // Only handle HTML page requests (not static assets)
+  if (!req.accepts('html')) {
+    return next();
+  }
+  if (fs.existsSync(path.join(frontendDistPath, 'index.html'))) {
     res.sendFile(path.join(frontendDistPath, 'index.html'));
-  });
-}
+  } else {
+    res.status(503).send(
+      '<h1>Frontend not built</h1>' +
+      '<p>Run: <code>cd frontend && npm install && npm run build</code></p>'
+    );
+  }
+});
 
 export default app;

@@ -24,7 +24,7 @@ export default function AdminPage() {
     },
     {
       key: 'prompts',
-      label: '提示词管理',
+      label: 'System Prompt 管理',
       children: <PromptManagement />,
     },
     {

@@ -39,7 +39,7 @@ export default function LoginPage() {
           <Title level={3} style={{ marginBottom: 4 }}>AI 聊天助手</Title>
           <Typography.Text type="secondary">登录以开始对话</Typography.Text>
         </div>
-        <Form name="login" onFinish={onFinish} size="large">
+        <Form name="login" onFinish={onFinish} method="POST" size="large">
           <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
             <Input prefix={<UserOutlined />} placeholder="用户名" />
           </Form.Item>

@@ -40,10 +40,10 @@ export default function PromptManagement() {
     try {
       if (editingPrompt) {
         await updatePrompt.mutateAsync({ id: editingPrompt.id, data: values });
-        message.success('提示词已更新');
+        message.success('System Prompt 已更新');
       } else {
         await createPrompt.mutateAsync(values);
-        message.success('提示词已创建');
+        message.success('System Prompt 已创建');
       }
       setEditVisible(false);
     } catch {
@@ -54,7 +54,7 @@ export default function PromptManagement() {
   const handleActivate = async (id: number) => {
     try {
       await activatePrompt.mutateAsync(id);
-      message.success('提示词已激活');
+      message.success('System Prompt 已激活');
     } catch {
       message.error('激活失败');
     }
@@ -63,7 +63,7 @@ export default function PromptManagement() {
   const handleDeactivate = async (id: number) => {
     try {
       await deactivatePrompt.mutateAsync(id);
-      message.success('提示词已停用');
+      message.success('System Prompt 已停用');
     } catch {
       message.error('停用失败');
     }
@@ -119,7 +119,7 @@ export default function PromptManagement() {
             </Button>
           )}
           <Popconfirm
-            title="确定删除此提示词？"
+            title="确定删除此 System Prompt？"
             onConfirm={() => deletePrompt.mutate(record.id)}
             okText="删除"
             cancelText="取消"
@@ -134,9 +134,9 @@ export default function PromptManagement() {
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
-        <Typography.Title level={5} style={{ margin: 0 }}>提示词管理</Typography.Title>
+        <Typography.Title level={5} style={{ margin: 0 }}>System Prompt 管理</Typography.Title>
         <Button type="primary" icon={<PlusOutlined />} onClick={handleOpenCreate}>
-          新建提示词
+          新建 System Prompt
         </Button>
       </div>
 
@@ -149,7 +149,7 @@ export default function PromptManagement() {
       />
 
       <Modal
-        title={editingPrompt ? '编辑提示词' : '新建提示词'}
+        title={editingPrompt ? '编辑 System Prompt' : '新建 System Prompt'}
         open={editVisible}
         onCancel={() => setEditVisible(false)}
         footer={null}
@@ -162,7 +162,7 @@ export default function PromptManagement() {
           <Form.Item name="description" label="描述">
             <Input />
           </Form.Item>
-          <Form.Item name="content" label="提示词内容" rules={[{ required: true }]}>
+          <Form.Item name="content" label="System Prompt 内容" rules={[{ required: true }]}>
             <TextArea rows={8} placeholder="你是 AI 助手..." />
           </Form.Item>
           <Form.Item name="is_active" label="立即激活" valuePropName="checked">
