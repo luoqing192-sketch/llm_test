@@ -18,7 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Initialize upload directory
-const uploadsDir = path.join(process.cwd(), 'uploads');
+const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
@@ -30,7 +30,10 @@ const storage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
+    // multer 的 originalname 默认 latin1 编码，中文会乱码，需转 utf8
+    const decodedName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    file.originalname = decodedName;
+    cb(null, uniqueSuffix + '-' + decodedName);
   }
 });
 
@@ -561,6 +564,7 @@ app.post('/api/admin/documents/upload', authenticateToken, requireAdmin, upload.
     }
 
     // Save document record
+    console.log(`[upload] 文件: ${req.file.originalname} | 大小: ${req.file.size} | 路径: ${req.file.path}`);
     const [result] = await pool.query(
       'INSERT INTO documents (filename, original_name, file_path, file_size, knowledge_base_id, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)',
       [req.file.filename, req.file.originalname, req.file.path, req.file.size, knowledge_base_id, req.user.id]

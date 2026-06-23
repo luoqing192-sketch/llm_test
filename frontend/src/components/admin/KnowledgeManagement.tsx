@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Card, Button, Space, Modal, Form, Input, Popconfirm, Typography,
   message, Upload, Table, Select,
@@ -26,6 +26,13 @@ export default function KnowledgeManagement() {
 
   // Selected base
   const [selectedBaseId, setSelectedBaseId] = useState<number | null>(null);
+
+  // 默认选中第一条知识库
+  useEffect(() => {
+    if (!selectedBaseId && bases && bases.length > 0) {
+      setSelectedBaseId(bases[0].id);
+    }
+  }, [bases, selectedBaseId]);
 
   // Knowledge Items
   const { data: items, isLoading: itemsLoading } = useKnowledgeItems(selectedBaseId);
