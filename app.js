@@ -604,9 +604,9 @@ app.get('/api/admin/knowledge/search', authenticateToken, async (req, res) => {
       SELECT ki.*, kb.name as knowledge_base_name
       FROM knowledge_items ki
       JOIN knowledge_bases kb ON ki.knowledge_base_id = kb.id
-      WHERE MATCH(ki.title, ki.content, ki.keywords) AGAINST(? IN NATURAL LANGUAGE MODE)
-      LIMIT 5
-    `, [query]);
+      WHERE ki.title LIKE ? OR ki.content LIKE ? OR ki.keywords LIKE ?
+      LIMIT 20
+    `, [`%${query}%`, `%${query}%`, `%${query}%`]);
 
     res.json(items);
   } catch (error) {
@@ -919,7 +919,7 @@ async function getEmbeddingConfig() {
 }
 
 // RAG: Search knowledge using Qdrant vector similarity
-// 返回 { items, fallback }：fallback=true 表示向量检索失败、已降级为 MySQL 全文检索
+// 返回 { items, fallback }：fallback=true 表示向量检索失败、本次未参考知识库
 async function searchKnowledge(query) {
   const settings = await getLLMSettings();
   const limit = parseInt(settings.knowledge_retrieval_limit) || 3;
@@ -944,19 +944,51 @@ async function searchKnowledge(query) {
       fallback: false,
     };
   } catch (error) {
-    console.error('Qdrant search error, falling back to MySQL FULLTEXT:', error);
-    // Fallback to MySQL FULLTEXT search
-    const [items] = await pool.query(`
-      SELECT ki.*, kb.name as knowledge_base_name,
-             MATCH(ki.title, ki.content, ki.keywords) AGAINST(? IN NATURAL LANGUAGE MODE) as relevance_score
-      FROM knowledge_items ki
-      JOIN knowledge_bases kb ON ki.knowledge_base_id = kb.id
-      WHERE MATCH(ki.title, ki.content, ki.keywords) AGAINST(? IN NATURAL LANGUAGE MODE)
-      HAVING relevance_score >= ?
-      ORDER BY relevance_score DESC
-      LIMIT ?
-    `, [query, query, minScore, limit]);
-    return { items, fallback: true };
+    // MySQL 不做检索降级：向量检索失败时直接返回空，由上层提示用户
+    console.error('Qdrant search error:', error);
+    return { items: [], fallback: true };
+  }
+}
+
+// 意图分类：判断用户输入是闲聊还是需要检索工程知识库的问题
+// 返回 true 表示需要查 Qdrant，false 表示闲聊、直接调用大模型
+async function classifyQuery(message) {
+  const settings = await getLLMSettings();
+  try {
+    const response = await fetch(settings.llm_base_url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.llm_api_key}`,
+      },
+      body: JSON.stringify({
+        model: settings.llm_model,
+        stream: false,
+        max_tokens: 5,
+        messages: [
+          {
+            role: 'system',
+            content:
+              '你是一个意图分类器。判断用户输入是否是需要查询工程/技术知识库才能准确回答的问题。' +
+              '若是技术、工程、产品、流程等具体问题，只回复 YES；' +
+              '若是闲聊、问候、寒暄或与知识库无关的日常问题，只回复 NO。'
+          },
+          { role: 'user', content: message },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      console.error('Classify query error:', response.status, await response.text().catch(() => ''));
+      return false;
+    }
+
+    const data = await response.json();
+    const content = (data.choices?.[0]?.message?.content || '').trim().toUpperCase();
+    return content.startsWith('YES');
+  } catch (error) {
+    console.error('Classify query failed:', error.message);
+    return false;
   }
 }
 
@@ -998,15 +1030,20 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const settings = await getLLMSettings();
     const activePrompt = await getActivePrompt();
 
-    // Search knowledge base via Qdrant vector similarity
+    // 先做意图分类：仅当判定为知识库问题时才查 Qdrant，闲聊直接走大模型
+    const needRetrieval = await classifyQuery(message);
+
     let knowledgeItems = [];
     let ragFallback = false;
-    try {
-      const searchResult = await searchKnowledge(message);
-      knowledgeItems = searchResult.items;
-      ragFallback = searchResult.fallback;
-    } catch (searchError) {
-      console.error('Knowledge search error:', searchError);
+    if (needRetrieval) {
+      try {
+        const searchResult = await searchKnowledge(message);
+        knowledgeItems = searchResult.items;
+        ragFallback = searchResult.fallback;
+      } catch (searchError) {
+        console.error('Knowledge search error:', searchError);
+        ragFallback = true;
+      }
     }
 
     // Build system message
@@ -1062,9 +1099,9 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'queue', ...queueStatus })}\n\n`);
     }
 
-    // 知识库向量检索失败、已降级为全文检索时，提示用户
-    if (ragFallback) {
-      res.write(`data: ${JSON.stringify({ type: 'notice', message: '知识库向量检索不可用，已降级为全文检索' })}\n\n`);
+    // 仅当判定为知识库问题、且向量检索失败时提示用户（闲聊不检索，无提示）
+    if (needRetrieval && ragFallback) {
+      res.write(`data: ${JSON.stringify({ type: 'notice', message: '知识库检索失败，本次回答未参考知识库内容' })}\n\n`);
     }
 
     // Use LLM Queue for concurrency control
