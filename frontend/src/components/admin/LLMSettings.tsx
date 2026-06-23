@@ -3,7 +3,7 @@ import { Form, Input, InputNumber, Button, Card, Typography, message, Spin } fro
 import { useSettings, useUpdateSettings } from '@/hooks/useAdminData';
 
 export default function LLMSettings() {
-  const { data: settings, isLoading } = useSettings();
+  const { data: settings, isLoading, refetch } = useSettings();
   const updateSettings = useUpdateSettings();
   const [form] = Form.useForm();
 
@@ -29,7 +29,9 @@ export default function LLMSettings() {
         stringified[key] = String(value);
       }
       await updateSettings.mutateAsync(stringified as any);
-      message.success('设置已保存');
+      // 保存后立即 refetch 确认 DB 数据一致
+      refetch();
+      message.success('设置已保存，新配置立即生效');
     } catch {
       message.error('保存设置失败');
     }

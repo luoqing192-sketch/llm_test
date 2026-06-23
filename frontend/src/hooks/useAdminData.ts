@@ -48,6 +48,9 @@ export function useSettings() {
   return useQuery({
     queryKey: ['admin', 'settings'],
     queryFn: () => settingsApi.get().then((r) => r.data),
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchOnMount: 'always',
   });
 }
 
@@ -55,7 +58,15 @@ export function useUpdateSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (settings: Partial<LLMSettings>) => settingsApi.update(settings),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }),
+    onSuccess: (_, variables) => {
+      // 立即同步更新缓存，不等 refetch
+      queryClient.setQueryData(['admin', 'settings'], (old: LLMSettings | undefined) => {
+        if (!old) return old;
+        return { ...old, ...variables };
+      });
+      // 同时触发后台 refetch 确认一致
+      queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] });
+    },
   });
 }
 
