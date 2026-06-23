@@ -26,15 +26,24 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// 401 auto-redirect
+// 401/403 认证失败处理：仅在 token 存在但被服务端拒绝时才登出
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+    const status = error.response?.status;
+    const token = localStorage.getItem('token');
+
+    // 只有当 token 存在且被服务端明确拒绝时才清除登录态
+    // 401 = token 缺失, 403 = token 无效/过期
+    if (token && (status === 401 || status === 403)) {
+      // 排除登录接口本身的 401（密码错误）
+      const isLoginRequest = error.config?.url?.includes('/auth/login');
+      if (!isLoginRequest) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
       }
     }
     return Promise.reject(error);

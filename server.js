@@ -30,10 +30,14 @@ if (!fs.existsSync(frontendIndexPath)) {
 
 import app from './app.js';
 import { initQdrant } from './qdrant.js';
+import { ensureAdminUser } from './init-admin.js';
 
 const PORT = process.env.PORT || 3000;
 
 async function start() {
+  // 确保 admin 账户存在
+  await ensureAdminUser();
+
   try {
     await initQdrant();
   } catch (error) {
