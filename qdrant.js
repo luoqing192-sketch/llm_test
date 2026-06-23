@@ -6,7 +6,7 @@ const qdrant = new QdrantClient({
 });
 
 const COLLECTION_NAME = 'knowledge_vectors';
-const VECTOR_SIZE = 1536; // OpenAI embedding dimension
+const VECTOR_SIZE = parseInt(process.env.EMBEDDING_DIMENSION || '1024');
 
 export async function initQdrant() {
   try {
