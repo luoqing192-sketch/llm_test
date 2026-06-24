@@ -861,12 +861,30 @@ function classifyQuery(message) {
   if (titles.length === 0) return false;
 
   const query = message.toLowerCase();
-  // 把每个 wiki 标题拆成关键词（按中文字符、英文单词、数字分词）
+
+  // 从标题提取关键词（英文单词 + 中文 n-gram）
+  function extractKeywords(title) {
+    const keywords = new Set();
+    const lower = title.toLowerCase();
+
+    // 英文单词和数字
+    const enWords = lower.match(/[a-z0-9]+/g) || [];
+    enWords.forEach(w => w.length >= 2 && keywords.add(w));
+
+    // 中文：2-gram（每2个连续字符）
+    const cnChars = title.match(/[一-鿿]/g) || [];
+    for (let i = 0; i <= cnChars.length - 2; i++) {
+      keywords.add(cnChars[i] + cnChars[i + 1]);
+    }
+
+    return Array.from(keywords);
+  }
+
   for (const title of titles) {
-    const keywords = title.toLowerCase().match(/[一-鿿]+|[a-z0-9]+/gi) || [];
+    const keywords = extractKeywords(title);
     for (const kw of keywords) {
-      if (kw.length >= 2 && query.includes(kw)) {
-        console.log(`[classifyQuery] 用户: "${message.substring(0, 30)}" → 匹配 wiki 标题 "${title}" 关键词 "${kw}" → 检索知识库`);
+      if (query.includes(kw)) {
+        console.log(`[classifyQuery] 用户: "${message.substring(0, 30)}" → 匹配 wiki "${title}" 关键词 "${kw}" → 检索知识库`);
         return true;
       }
     }
