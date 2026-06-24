@@ -5,12 +5,12 @@ import {
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, EditOutlined, InboxOutlined,
-  FileMarkdownOutlined,
+  FileMarkdownOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import {
   useKnowledgeBases, useCreateKnowledgeBase, useDeleteKnowledgeBase,
   useKnowledgeItems, useCreateKnowledgeItem, useUpdateKnowledgeItem, useDeleteKnowledgeItem,
-  useWikiFiles, useUploadWikiFile, useDeleteWikiFile,
+  useWikiFiles, useUploadWikiFile, useDeleteWikiFile, useOrganizeWiki,
 } from '@/hooks/useAdminData';
 import type { KnowledgeBase, KnowledgeItem } from '@/types';
 import type { WikiFile } from '@/services/api';
@@ -40,6 +40,7 @@ export default function KnowledgeManagement() {
   const { data: wikiFiles, isLoading: wikiLoading } = useWikiFiles();
   const uploadWiki = useUploadWikiFile();
   const deleteWiki = useDeleteWikiFile();
+  const organizeWiki = useOrganizeWiki();
 
   const [baseModalVisible, setBaseModalVisible] = useState(false);
   const [itemModalVisible, setItemModalVisible] = useState(false);
@@ -88,6 +89,16 @@ export default function KnowledgeManagement() {
       message.error('上传失败');
     }
     return false;
+  };
+
+  const handleOrganizeWiki = async () => {
+    message.loading({ content: 'Wiki 整理中（LLM 正在分析文档...）', key: 'organize', duration: 0 });
+    try {
+      await organizeWiki.mutateAsync(undefined);
+      message.success({ content: 'Wiki 整理完成！已生成/更新文档', key: 'organize' });
+    } catch {
+      message.error({ content: 'Wiki 整理失败', key: 'organize' });
+    }
   };
 
   const wikiColumns = [
@@ -186,9 +197,19 @@ export default function KnowledgeManagement() {
         size="small"
         style={{ marginBottom: 24 }}
         extra={
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            上传 .md 文件，聊天时 LLM 会自动检索相关文件内容
-          </Typography.Text>
+          <Space>
+            <Button
+              icon={<ThunderboltOutlined />}
+              onClick={handleOrganizeWiki}
+              loading={organizeWiki.isPending}
+              style={{ color: 'var(--primary)' }}
+            >
+              Wiki 整理
+            </Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              上传 .md 文件，聊天时 LLM 会自动检索相关内容
+            </Typography.Text>
+          </Space>
         }
       >
         <Dragger

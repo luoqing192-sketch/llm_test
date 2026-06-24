@@ -188,6 +188,9 @@ export const wikiApi = {
 
   delete: (filename: string) =>
     api.delete(`/admin/wiki/${encodeURIComponent(filename)}`),
+
+  organize: (task?: string) =>
+    api.post('/admin/wiki/organize', { task }, { timeout: 300000 }),
 };
 
 export default api;

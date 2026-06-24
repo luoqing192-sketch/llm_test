@@ -631,6 +631,72 @@ app.delete('/api/admin/wiki/:filename', authenticateToken, requireAdmin, async (
   }
 });
 
+// Wiki 整理：调用 wiki_agent.py（DeepSeek tool-call）扫描并整理 wiki 文档
+app.post('/api/admin/wiki/organize', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const task = req.body.task || '扫描本目录所有 markdown 文档，按主题分类生成 INDEX.md，每个文档配 1 行中文摘要。';
+    const scriptPath = path.join(WIKI_DIR, 'script', 'wiki_agent.py');
+
+    if (!fs.existsSync(scriptPath)) {
+      return res.status(500).json({ error: 'wiki_agent.py 不存在' });
+    }
+
+    const { execSync } = await import('child_process');
+    const env = {
+      ...process.env,
+      WIKI_DIR: WIKI_DIR,
+      LLM_ENDPOINT: 'https://api.deepseek.com/v1/chat/completions',
+      LLM_MODEL: 'deepseek-v4-pro',
+      LLM_API_KEY: process.env.DEEPSEEK_API_KEY || 'sk-1770fe3369ab47cb9dd4c5a0b4a2480a',
+    };
+
+    console.log(`[wiki organize] 任务: ${task}`);
+    const output = execSync(
+      `python3 "${scriptPath}" "${task.replace(/"/g, '\\"')}"`,
+      { env, timeout: 300000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf-8' }
+    );
+    console.log(`[wiki organize] 完成`);
+
+    res.json({ message: 'Wiki 整理完成', output });
+  } catch (error) {
+    console.error('Wiki organize error:', error.message);
+    const output = error.stdout || error.stderr || error.message;
+    res.status(500).json({ error: 'Wiki 整理失败', output });
+  }
+});
+
+// Wiki 查询：调用 wiki_query.py（DeepSeek tool-call）检索 wiki 内容
+app.post('/api/admin/wiki/query', authenticateToken, async (req, res) => {
+  try {
+    const { question } = req.body;
+    if (!question) return res.status(400).json({ error: '缺少问题' });
+
+    const scriptPath = path.join(WIKI_DIR, 'script', 'wiki_query.py');
+    if (!fs.existsSync(scriptPath)) {
+      return res.status(500).json({ error: 'wiki_query.py 不存在' });
+    }
+
+    const { execSync } = await import('child_process');
+    const env = {
+      ...process.env,
+      WIKI_DIR: WIKI_DIR,
+      LLM_ENDPOINT: 'https://api.deepseek.com/v1/chat/completions',
+      LLM_MODEL: 'deepseek-v4-pro',
+      LLM_API_KEY: process.env.DEEPSEEK_API_KEY || 'sk-1770fe3369ab47cb9dd4c5a0b4a2480a',
+    };
+
+    const output = execSync(
+      `python3 "${scriptPath}" "${question.replace(/"/g, '\\"')}"`,
+      { env, timeout: 120000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf-8' }
+    );
+
+    res.json({ answer: output });
+  } catch (error) {
+    console.error('Wiki query error:', error.message);
+    res.status(500).json({ error: 'Wiki 查询失败' });
+  }
+});
+
 // Chat file upload (any authenticated user)
 app.post('/api/chat/upload', authenticateToken, upload.single('file'), async (req, res) => {
   try {
@@ -769,85 +835,47 @@ function listWikiFiles() {
   }
 }
 
-// LLM Wiki 两步检索：
-// 第一步：让 LLM 看文件标题列表，选出与问题相关的文件
-// 第二步：读取选中文件的内容，作为知识上下文注入 prompt
+// LLM Wiki 检索：调用 wiki_query.py（DeepSeek tool-call agent）
+// 用 LLM tool-call 能力让模型自己搜索、读取 wiki 文件，带引用返回
 async function searchKnowledge(query) {
   try {
-    const titles = listWikiFiles();
-    if (titles.length === 0) {
-      return { items: [], fallback: false };
-    }
-
-    // 第一步：LLM 从标题列表中选择相关文件
-    const settings = await getLLMSettings();
-    const response = await fetch(settings.llm_base_url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.llm_api_key}`,
-      },
-      body: JSON.stringify({
-        model: settings.llm_model,
-        stream: false,
-        max_tokens: 200,
-        messages: [
-          {
-            role: 'system',
-            content:
-              '你是一个知识库文件选择器。根据用户的问题，从下面的文件标题列表中选出可能包含相关信息的文件。' +
-              '只返回文件标题，每行一个，不要加序号或其他标记。如果没有相关文件，返回空。\n\n' +
-              '可用文件：\n' + titles.map(t => `- ${t}`).join('\n')
-          },
-          { role: 'user', content: query },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      console.error('Wiki file selection error:', response.status);
+    const scriptPath = path.join(WIKI_DIR, 'script', 'wiki_query.py');
+    if (!fs.existsSync(scriptPath)) {
+      console.error('[searchKnowledge] wiki_query.py 不存在');
       return { items: [], fallback: true };
     }
 
-    const data = await response.json();
-    // 兼容 OpenAI/DeepSeek/Anthropic 多种响应格式
-    const msg = data.choices?.[0]?.message;
-    const llmAnswer = (
-      msg?.content ||
-      msg?.reasoning_content ||
-      data.content?.[0]?.text ||
-      ''
-    ).trim();
-    console.log(`[searchKnowledge] LLM 选择的文件: "${llmAnswer}"`);
+    const { execSync } = await import('child_process');
+    const env = {
+      ...process.env,
+      WIKI_DIR: WIKI_DIR,
+      LLM_ENDPOINT: 'https://api.deepseek.com/v1/chat/completions',
+      LLM_MODEL: 'deepseek-v4-pro',
+      LLM_API_KEY: process.env.DEEPSEEK_API_KEY || 'sk-1770fe3369ab47cb9dd4c5a0b4a2480a',
+    };
 
-    if (!llmAnswer) {
+    console.log(`[searchKnowledge] 调用 wiki_query.py: "${query.substring(0, 50)}"`);
+    const output = execSync(
+      `python3 "${scriptPath}" "${query.replace(/"/g, '\\"')}"`,
+      { env, timeout: 120000, maxBuffer: 10 * 1024 * 1024, encoding: 'utf-8' }
+    );
+
+    // wiki_query.py 输出的最终答案在 "═" 分隔线之间
+    const answerMatch = output.match(/═{10,}\n([\s\S]*?)(?:\n═{10,}|$)/);
+    const answer = answerMatch ? answerMatch[1].trim() : output.trim();
+
+    if (!answer || answer === '(empty answer)') {
+      console.log('[searchKnowledge] wiki_query 未找到相关内容');
       return { items: [], fallback: false };
     }
 
-    // 解析 LLM 返回的文件标题列表
-    const selectedTitles = llmAnswer
-      .split('\n')
-      .map(line => line.replace(/^[-*•\d.)\s]+/, '').trim())
-      .filter(t => t && titles.includes(t));
-
-    if (selectedTitles.length === 0) {
-      return { items: [], fallback: false };
-    }
-
-    // 第二步：读取选中文件的内容
-    const items = selectedTitles.map(title => {
-      const filePath = path.join(WIKI_DIR, `${title}.md`);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        return { title, content, knowledge_base_name: 'Wiki' };
-      } catch {
-        return null;
-      }
-    }).filter(Boolean);
-
-    return { items, fallback: false };
+    console.log(`[searchKnowledge] wiki_query 返回 ${answer.length} 字符`);
+    return {
+      items: [{ title: 'Wiki 知识库检索结果', content: answer, knowledge_base_name: 'Wiki' }],
+      fallback: false,
+    };
   } catch (error) {
-    console.error('Wiki search error:', error);
+    console.error('Wiki search error:', error.message);
     return { items: [], fallback: true };
   }
 }

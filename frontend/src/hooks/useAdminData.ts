@@ -238,3 +238,13 @@ export function useDeleteWikiFile() {
     },
   });
 }
+
+export function useOrganizeWiki() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (task?: string) => wikiApi.organize(task),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'wiki'] });
+    },
+  });
+}
