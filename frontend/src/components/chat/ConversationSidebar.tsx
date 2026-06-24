@@ -6,6 +6,7 @@ import {
   LogoutOutlined,
 } from '@ant-design/icons';
 import { Button, List, Typography, Space, Popconfirm, Tooltip } from 'antd';
+import { useQueryClient } from '@tanstack/react-query';
 import { useConversations, useCreateConversation, useDeleteConversation } from '@/hooks/useConversations';
 import { useChatStore } from '@/stores/chatStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -16,9 +17,10 @@ export default function ConversationSidebar() {
   const { data: conversations, isLoading } = useConversations();
   const createMutation = useCreateConversation();
   const deleteMutation = useDeleteConversation();
-  const { currentConversationId, setCurrentConversation } = useChatStore();
+  const { currentConversationId, setCurrentConversation, reset: resetChat } = useChatStore();
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const handleNewConversation = () => {
     createMutation.mutate(undefined);
@@ -33,6 +35,8 @@ export default function ConversationSidebar() {
   };
 
   const handleLogout = () => {
+    resetChat();
+    queryClient.clear();
     logout();
     navigate('/login');
   };
