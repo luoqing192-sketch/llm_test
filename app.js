@@ -854,54 +854,26 @@ async function searchKnowledge(query) {
 
 // 意图分类：判断用户输入是闲聊还是需要检索工程知识库的问题
 // 返回 true 表示需要查知识库，false 表示闲聊、直接调用大模型
-async function classifyQuery(message) {
-  const settings = await getLLMSettings();
-  try {
-    const response = await fetch(settings.llm_base_url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${settings.llm_api_key}`,
-      },
-      body: JSON.stringify({
-        model: settings.llm_model,
-        stream: false,
-        max_tokens: 32,
-        messages: [
-          {
-            role: 'system',
-            content:
-              '你是一个意图分类器。判断用户输入是否是需要查询工程/技术知识库才能准确回答的问题。' +
-              '若是技术、工程、产品、流程等具体问题，只回复 YES；' +
-              '若是闲聊、问候、寒暄或与知识库无关的日常问题，只回复 NO。' +
-              '不要输出思考过程，直接回复 YES 或 NO。'
-          },
-          { role: 'user', content: message },
-        ],
-      }),
-    });
+// 意图分类：基于 wiki 文件标题关键词匹配，判断是否需要检索知识库
+// 不用 LLM 做分类（DeepSeek reasoning 模式会把 token 耗在思考链上，分类不出结果）
+function classifyQuery(message) {
+  const titles = listWikiFiles();
+  if (titles.length === 0) return false;
 
-    if (!response.ok) {
-      console.error('Classify query error:', response.status, await response.text().catch(() => ''));
-      return false;
+  const query = message.toLowerCase();
+  // 把每个 wiki 标题拆成关键词（按中文字符、英文单词、数字分词）
+  for (const title of titles) {
+    const keywords = title.toLowerCase().match(/[一-鿿]+|[a-z0-9]+/gi) || [];
+    for (const kw of keywords) {
+      if (kw.length >= 2 && query.includes(kw)) {
+        console.log(`[classifyQuery] 用户: "${message.substring(0, 30)}" → 匹配 wiki 标题 "${title}" 关键词 "${kw}" → 检索知识库`);
+        return true;
+      }
     }
-
-    const data = await response.json();
-    console.log('[classifyQuery] LLM 原始响应:', JSON.stringify(data).substring(0, 500));
-    // 兼容 OpenAI/DeepSeek/Anthropic 多种响应格式
-    const msg = data.choices?.[0]?.message;
-    const content = (
-      msg?.content ||
-      msg?.reasoning_content ||
-      data.content?.[0]?.text ||
-      ''
-    ).trim().toUpperCase();
-    console.log(`[classifyQuery] 用户: "${message.substring(0, 30)}" → LLM 回复: "${content}" → ${content.startsWith('YES') ? '检索知识库' : '直接回复'}`);
-    return content.startsWith('YES');
-  } catch (error) {
-    console.error('Classify query failed:', error.message);
-    return false;
   }
+
+  console.log(`[classifyQuery] 用户: "${message.substring(0, 30)}" → 无匹配 wiki 标题 → 直接回复`);
+  return false;
 }
 
 // Estimate token count (rough: ~4 chars per token for CJK, ~4 chars per token for English)
@@ -943,7 +915,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const activePrompt = await getActivePrompt();
 
     // 先做意图分类：仅当判定为知识库问题时才查 Qdrant，闲聊直接走大模型
-    const needRetrieval = await classifyQuery(message);
+    const needRetrieval = classifyQuery(message);
 
     let knowledgeItems = [];
     let ragFallback = false;
