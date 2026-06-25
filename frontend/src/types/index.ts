@@ -46,21 +46,11 @@ export interface Prompt {
   created_at: string;
 }
 
-export interface KnowledgeBase {
-  id: number;
+export interface WikiFile {
   name: string;
-  description: string;
-  item_count?: number;
-  created_at?: string;
-}
-
-export interface KnowledgeItem {
-  id: number;
-  knowledge_base_id: number;
-  title: string;
-  content: string;
-  keywords: string;
-  created_at?: string;
+  filename: string;
+  size: number;
+  updated_at: string;
 }
 
 export interface DocItem {

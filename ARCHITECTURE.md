@@ -24,7 +24,7 @@
 - 动态 LLM 配置（OpenAI/DeepSeek/Anthropic 等）
 - **Wiki 知识库**（基于 DeepSeek tool-call agent）
 - Prompt 模板管理
-- 管理后台（用户/设置/知识库/Prompt）
+- 管理后台（用户/设置/Prompt/Wiki）
 
 ### 核心特性
 
@@ -33,7 +33,6 @@
 | **多模型支持** | 兼容 OpenAI、Anthropic、DeepSeek 等主流 API |
 | **Wiki 知识库** | tool-call agent 自动检索、整理 markdown 文档 |
 | **流式对话** | SSE 实时流式输出 |
-| **关键词检索触发** | 中文 2-gram 分词，智能匹配 wiki 标题 |
 | **用户隔离** | conversation/message 按 user_id 完全隔离 |
 | **管理后台** | 完整的 admin 权限控制 |
 
@@ -156,16 +155,12 @@ authenticateToken 中间件验证 → req.user = decoded
 ```
 用户输入消息
   ↓
-1. classifyQuery(message)  // 关键词匹配，判断是否需要检索 wiki
-  ├─ 提取 wiki 文件标题的 2-gram 关键词
-  ├─ 用户消息包含关键词 → 返回 true
-  └─ 否则 → false
+1. 调用 searchKnowledge(message)
+   └─ 执行 wiki_query.py (Python subprocess)
+       └─ DeepSeek tool-call: list/search/read wiki 文件
+       └─ 返回带引用的答案
   ↓
-2. 如果 needRetrieval === true:
-   ├─ 调用 searchKnowledge(message)
-   │   └─ 执行 wiki_query.py (Python subprocess)
-   │       └─ DeepSeek tool-call: list/search/read wiki 文件
-   │       └─ 返回带引用的答案
+2. 如果检索成功:
    ├─ 答案注入 systemMessage
    └─ knowledgeItems = [{ title, content, knowledge_base_name }]
   ↓
@@ -178,13 +173,6 @@ authenticateToken 中间件验证 → req.user = decoded
    ├─ response.write(`data: ${chunk}\n\n`)
    ├─ 前端 EventSource 接收
    └─ 最后保存完整对话到 MySQL
-```
-
-#### 意图分类（classifyQuery）
-**关键词 n-gram 匹配**（不再用 LLM 分类，DeepSeek reasoning 模式会失败）：
-```javascript
-// 标题 "推荐系统架构" → 2-gram: ["推荐", "荐系", "系统", "统架", "架构"]
-// 用户 "推荐系统怎么做" → 包含 "推荐"、"系统" → 匹配成功
 ```
 
 ### 3. Wiki 知识库
@@ -222,7 +210,7 @@ wiki/
 - `search_content(keyword)`: 搜索内容
 - `read_file(path)`: 读取文件
 
-**调用时机**：聊天中 classifyQuery 触发检索
+**调用时机**：聊天时自动触发检索
 
 **返回格式**：
 ```
@@ -309,10 +297,7 @@ navigate('/login');
 3. 验证 conversation 归属：
    SELECT * FROM conversations WHERE id = ? AND user_id = ?
   ↓
-4. classifyQuery("推荐系统怎么做")
-   → 匹配 wiki 标题 "推荐系统架构" 关键词 "推荐"、"系统" → true
-  ↓
-5. searchKnowledge("推荐系统怎么做")
+4. searchKnowledge("推荐系统怎么做")
    ├─ execSync(`python3 wiki_query.py "推荐系统怎么做"`)
    ├─ wiki_query.py 调用 DeepSeek tool-call:
    │   1. search_content("推荐") → 找到 "推荐系统架构.md"
@@ -320,24 +305,24 @@ navigate('/login');
    │   3. LLM 总结 → 返回答案 + 引用
    └─ 返回 { items: [{ title, content, knowledge_base_name }] }
   ↓
-6. 构建 systemMessage:
+5. 构建 systemMessage:
    activePrompt.content + "\n\n以下是从知识库中检索到的相关信息：\n\n【知识 1】\n..."
   ↓
-7. fetch LLM API (stream: true)
+6. fetch LLM API (stream: true)
    ├─ OpenAI/DeepSeek/Anthropic endpoint
    ├─ messages: [{ role: 'system', content: systemMessage }, ...historyMessages, { role: 'user', content: "推荐系统怎么做" }]
    └─ model: settings.llm_model
   ↓
-8. SSE 流式返回
+7. SSE 流式返回
    ├─ for await (const chunk of stream):
    │   └─ res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`)
    └─ res.write(`data: [DONE]\n\n`)
   ↓
-9. 前端 EventSource 接收
+8. 前端 EventSource 接收
    ├─ onmessage: setStreamingContent(prev => prev + data.content)
    └─ 收到 [DONE]: 保存到 messages 数组
   ↓
-10. 后端保存完整对话
+9. 后端保存完整对话
    ├─ INSERT INTO messages (conversation_id, role, content) VALUES (?, 'user', ?)
    ├─ INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)
    └─ UPDATE conversations SET title = ?, updated_at = NOW() WHERE id = ?
@@ -392,16 +377,7 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxx  # wiki agent 专用
 
 ## 关键设计决策
 
-### 1. 为什么用关键词匹配代替 LLM 分类？
-
-**问题**：DeepSeek-v4-pro 的 reasoning 模式会把 max_tokens 全耗在 `reasoning_content` 上，`content` 为空，finish_reason=length，分类永远失败。
-
-**解决方案**：
-- 提取 wiki 标题的 2-gram 关键词（"推荐系统架构" → "推荐"、"系统"、"架构"）
-- 用户消息包含任意关键词 → 触发检索
-- 快速、零额外 API 调用、不受模型行为影响
-
-### 2. 为什么用 Python subprocess 调用 wiki agent？
+### 1. 为什么用 Python subprocess 调用 wiki agent？
 
 **优势**：
 - wiki_agent/wiki_query 是独立脚本，可单独测试/维护
@@ -421,7 +397,7 @@ DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxx  # wiki agent 专用
 const decodedName = Buffer.from(file.originalname, 'latin1').toString('utf8');
 ```
 
-### 4. 为什么 uploads 目录用 `__dirname` 不用 `process.cwd()`？
+### 3. 为什么 uploads 目录用 `__dirname` 不用 `process.cwd()`？
 
 **问题**：`restart.sh` 的 `cd frontend && npm run build` 会改变 cwd，导致 `process.cwd()` 不可靠。
 

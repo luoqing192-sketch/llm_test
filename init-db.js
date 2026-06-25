@@ -17,8 +17,6 @@ async function initDatabase() {
     await connection.query('USE chatapp');
 
     // Drop old tables for clean rebuild
-    await connection.query('DROP TABLE IF EXISTS knowledge_items');
-    await connection.query('DROP TABLE IF EXISTS knowledge_bases');
     await connection.query('DROP TABLE IF EXISTS prompts');
     await connection.query('DROP TABLE IF EXISTS settings');
     await connection.query('DROP TABLE IF EXISTS messages');
@@ -84,65 +82,6 @@ async function initDatabase() {
     `);
 
     // Knowledge bases
-    await connection.query(`
-      CREATE TABLE knowledge_bases (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        description VARCHAR(500) DEFAULT '',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Knowledge items
-    await connection.query(`
-      CREATE TABLE knowledge_items (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        knowledge_base_id INT NOT NULL,
-        title VARCHAR(255) NOT NULL,
-        content TEXT NOT NULL,
-        keywords VARCHAR(1000) DEFAULT '',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE,
-        FULLTEXT INDEX ft_title_content (title, content, keywords)
-      )
-    `);
-
-    // Documents
-    await connection.query(`
-      CREATE TABLE documents (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        knowledge_base_id INT NOT NULL,
-        filename VARCHAR(255) NOT NULL,
-        original_name VARCHAR(255) NOT NULL,
-        file_path VARCHAR(500) NOT NULL,
-        file_size BIGINT NOT NULL,
-        file_type VARCHAR(100),
-        uploaded_by INT NOT NULL,
-        uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_by INT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        status ENUM('pending', 'processing', 'completed', 'failed') DEFAULT 'pending',
-        error_message TEXT,
-        FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_bases(id) ON DELETE CASCADE,
-        FOREIGN KEY (uploaded_by) REFERENCES users(id),
-        FOREIGN KEY (updated_by) REFERENCES users(id)
-      )
-    `);
-
-    // Document chunks
-    await connection.query(`
-      CREATE TABLE document_chunks (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        document_id INT NOT NULL,
-        chunk_index INT NOT NULL,
-        content TEXT NOT NULL,
-        vector_id VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-      )
-    `);
 
     // Insert default settings
     const defaultSettings = [
@@ -152,8 +91,6 @@ async function initDatabase() {
       ['llm_temperature', '0.7'],
       ['llm_max_tokens', '4096'],
       ['llm_top_p', '0.9'],
-      ['knowledge_retrieval_limit', '3'],
-      ['knowledge_min_score', '0.1'],
       ['intent_prompt', '分析用户消息的意图，判断是否需要查询知识库。如果需要，提取关键查询词。']
     ];
 

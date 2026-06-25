@@ -6,8 +6,7 @@ import type {
   Message,
   LLMSettings,
   Prompt,
-  KnowledgeBase,
-  KnowledgeItem,
+  WikiFile,
   QueueStatus,
 } from '@/types';
 
@@ -134,46 +133,7 @@ export const promptsApi = {
   getActive: () => api.get<Prompt | null>('/admin/prompts/active'),
 };
 
-// ==================== Admin: Knowledge Bases ====================
-
-export const knowledgeBasesApi = {
-  list: () => api.get<KnowledgeBase[]>('/admin/knowledge-bases'),
-
-  create: (name: string, description: string = '') =>
-    api.post<KnowledgeBase>('/admin/knowledge-bases', { name, description }),
-
-  update: (id: number, data: { name: string; description: string }) =>
-    api.put<KnowledgeBase>(`/admin/knowledge-bases/${id}`, data),
-
-  delete: (id: number) => api.delete(`/admin/knowledge-bases/${id}`),
-};
-
-// ==================== Admin: Knowledge Items ====================
-
-export const knowledgeItemsApi = {
-  list: (baseId: number) =>
-    api.get<KnowledgeItem[]>(`/admin/knowledge-bases/${baseId}/items`),
-
-  create: (baseId: number, data: { title: string; content: string; keywords?: string }) =>
-    api.post<KnowledgeItem>(`/admin/knowledge-bases/${baseId}/items`, data),
-
-  update: (id: number, data: { title: string; content: string; keywords?: string }) =>
-    api.put<KnowledgeItem>(`/admin/knowledge-items/${id}`, data),
-
-  delete: (id: number) => api.delete(`/admin/knowledge-items/${id}`),
-
-  search: (query: string) =>
-    api.get<KnowledgeItem[]>('/admin/knowledge/search', { params: { query } }),
-};
-
 // ==================== Admin: Wiki Files ====================
-
-export interface WikiFile {
-  name: string;
-  filename: string;
-  size: number;
-  updated_at: string;
-}
 
 export const wikiApi = {
   list: () => api.get<WikiFile[]>('/admin/wiki'),
