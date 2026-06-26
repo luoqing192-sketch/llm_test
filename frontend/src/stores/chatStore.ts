@@ -1,106 +1,205 @@
 import { create } from 'zustand';
 import type { Message } from '@/types';
 
+export interface ConversationStreamState {
+  isStreaming: boolean;
+  streamingContent: string;
+  toolProgress: { tool: string; status: string } | null;
+  previewUrl: string | null;
+}
+
+export const defaultStreamState: ConversationStreamState = {
+  isStreaming: false,
+  streamingContent: '',
+  toolProgress: null,
+  previewUrl: null,
+};
+
 interface ChatState {
   currentConversationId: number | null;
   messages: Message[];
-  isStreaming: boolean;
-  streamingContent: string;
   ragNotice: string | null;
   queuePending: number;
   queueActive: number;
-  toolProgress: { tool: string; status: string } | null;
-  previewUrl: string | null;
+
+  // 按 conversationId 隔离的流式状态
+  streamStates: Record<number, ConversationStreamState>;
+
+  // 获取当前对话的流式状态（便捷方法）
+  getCurrentStreamState: () => ConversationStreamState;
 
   setCurrentConversation: (id: number | null) => void;
   setMessages: (messages: Message[]) => void;
   addMessage: (message: Message) => void;
-  setIsStreaming: (streaming: boolean) => void;
-  setStreamingContent: (content: string) => void;
-  appendStreamingContent: (chunk: string) => void;
+
+  // 所有流式操作都带 conversationId 参数
+  setIsStreaming: (conversationId: number, streaming: boolean) => void;
+  setStreamingContent: (conversationId: number, content: string) => void;
+  appendStreamingContent: (conversationId: number, chunk: string) => void;
   setRagNotice: (notice: string | null) => void;
-  finalizeStreaming: () => void;
+  finalizeStreaming: (conversationId: number) => void;
   setQueueStatus: (pending: number, active: number) => void;
-  setToolProgress: (progress: { tool: string; status: string } | null) => void;
-  setPreviewUrl: (url: string | null) => void;
-  clearCodeGenState: () => void;
+  setToolProgress: (conversationId: number, progress: { tool: string; status: string } | null) => void;
+  setPreviewUrl: (conversationId: number, url: string | null) => void;
+  clearCodeGenState: (conversationId: number) => void;
   reset: () => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
   currentConversationId: null,
   messages: [],
-  isStreaming: false,
-  streamingContent: '',
   ragNotice: null,
   queuePending: 0,
   queueActive: 0,
-  toolProgress: null,
-  previewUrl: null,
+  streamStates: {},
+
+  getCurrentStreamState: () => {
+    const { currentConversationId, streamStates } = get();
+    if (!currentConversationId) return defaultStreamState;
+    return streamStates[currentConversationId] || defaultStreamState;
+  },
 
   setCurrentConversation: (id) =>
-    set({ currentConversationId: id, messages: [], streamingContent: '', previewUrl: null, toolProgress: null }),
+    set({ currentConversationId: id, messages: [] }),
 
   setMessages: (messages) => set({ messages }),
 
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
 
-  setIsStreaming: (streaming) => {
-    if (streaming) {
-      set({ isStreaming: true, toolProgress: null });
-    } else {
-      set({ isStreaming: false });
-    }
+  setIsStreaming: (conversationId, streaming) => {
+    set((state) => ({
+      streamStates: {
+        ...state.streamStates,
+        [conversationId]: {
+          ...(state.streamStates[conversationId] || defaultStreamState),
+          isStreaming: streaming,
+          ...(streaming ? { toolProgress: null } : {}),
+        },
+      },
+    }));
   },
 
-  setStreamingContent: (content) => set({ streamingContent: content }),
+  setStreamingContent: (conversationId, content) => {
+    set((state) => ({
+      streamStates: {
+        ...state.streamStates,
+        [conversationId]: {
+          ...(state.streamStates[conversationId] || defaultStreamState),
+          streamingContent: content,
+        },
+      },
+    }));
+  },
 
-  appendStreamingContent: (chunk) =>
-    set((state) => ({ streamingContent: state.streamingContent + chunk })),
+  appendStreamingContent: (conversationId, chunk) => {
+    set((state) => {
+      const current = state.streamStates[conversationId] || defaultStreamState;
+      return {
+        streamStates: {
+          ...state.streamStates,
+          [conversationId]: {
+            ...current,
+            streamingContent: current.streamingContent + chunk,
+          },
+        },
+      };
+    });
+  },
 
   setRagNotice: (notice) => set({ ragNotice: notice }),
 
-  finalizeStreaming: () => {
-    const { streamingContent, currentConversationId } = get();
-    if (streamingContent && currentConversationId) {
+  finalizeStreaming: (conversationId) => {
+    const streamState = get().streamStates[conversationId] || defaultStreamState;
+
+    if (streamState.streamingContent && conversationId) {
       const assistantMessage: Message = {
         id: Date.now(),
-        conversation_id: currentConversationId,
+        conversation_id: conversationId,
         role: 'assistant',
-        content: streamingContent,
+        content: streamState.streamingContent,
         created_at: new Date().toISOString(),
       };
-      set((state) => ({
-        messages: [...state.messages, assistantMessage],
-        streamingContent: '',
-        ragNotice: null,
-        isStreaming: false,
-      }));
+
+      set((state) => {
+        const newStreamStates = { ...state.streamStates };
+        newStreamStates[conversationId] = {
+          ...(newStreamStates[conversationId] || defaultStreamState),
+          streamingContent: '',
+          isStreaming: false,
+        };
+
+        return {
+          messages: conversationId === state.currentConversationId
+            ? [...state.messages, assistantMessage]
+            : state.messages,
+          ragNotice: conversationId === state.currentConversationId ? null : state.ragNotice,
+          streamStates: newStreamStates,
+        };
+      });
     } else {
-      set({ streamingContent: '', ragNotice: null, isStreaming: false });
+      set((state) => {
+        const newStreamStates = { ...state.streamStates };
+        newStreamStates[conversationId] = {
+          ...(newStreamStates[conversationId] || defaultStreamState),
+          streamingContent: '',
+          isStreaming: false,
+        };
+        return {
+          ragNotice: conversationId === state.currentConversationId ? null : state.ragNotice,
+          streamStates: newStreamStates,
+        };
+      });
     }
   },
 
   setQueueStatus: (pending, active) =>
     set({ queuePending: pending, queueActive: active }),
 
-  setToolProgress: (progress) => set({ toolProgress: progress }),
+  setToolProgress: (conversationId, progress) => {
+    set((state) => ({
+      streamStates: {
+        ...state.streamStates,
+        [conversationId]: {
+          ...(state.streamStates[conversationId] || defaultStreamState),
+          toolProgress: progress,
+        },
+      },
+    }));
+  },
 
-  setPreviewUrl: (url) => set({ previewUrl: url }),
+  setPreviewUrl: (conversationId, url) => {
+    set((state) => ({
+      streamStates: {
+        ...state.streamStates,
+        [conversationId]: {
+          ...(state.streamStates[conversationId] || defaultStreamState),
+          previewUrl: url,
+        },
+      },
+    }));
+  },
 
-  clearCodeGenState: () => set({ toolProgress: null, previewUrl: null }),
+  clearCodeGenState: (conversationId) => {
+    set((state) => ({
+      streamStates: {
+        ...state.streamStates,
+        [conversationId]: {
+          ...(state.streamStates[conversationId] || defaultStreamState),
+          toolProgress: null,
+          previewUrl: null,
+        },
+      },
+    }));
+  },
 
   reset: () =>
     set({
       currentConversationId: null,
       messages: [],
-      isStreaming: false,
-      streamingContent: '',
       ragNotice: null,
       queuePending: 0,
       queueActive: 0,
-      toolProgress: null,
-      previewUrl: null,
+      streamStates: {},
     }),
 }));

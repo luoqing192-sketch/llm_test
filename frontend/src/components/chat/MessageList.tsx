@@ -1,14 +1,21 @@
 import { useEffect, useRef } from 'react';
 import { Typography, Avatar, Spin, Alert } from 'antd';
 import { RobotOutlined, UserOutlined, LoadingOutlined } from '@ant-design/icons';
-import { useChatStore } from '@/stores/chatStore';
+import { useChatStore, defaultStreamState } from '@/stores/chatStore';
 import { useConversationMessages } from '@/hooks/useConversations';
 import CodePreview from './CodePreview';
 import ToolProgress from './ToolProgress';
 import dayjs from 'dayjs';
 
 export default function MessageList() {
-  const { currentConversationId, isStreaming, streamingContent, ragNotice, toolProgress, previewUrl } = useChatStore();
+  const currentConversationId = useChatStore((s) => s.currentConversationId);
+  const ragNotice = useChatStore((s) => s.ragNotice);
+  const streamState = useChatStore((s) =>
+    s.currentConversationId
+      ? (s.streamStates[s.currentConversationId] || defaultStreamState)
+      : defaultStreamState
+  );
+  const { isStreaming, streamingContent, toolProgress, previewUrl } = streamState;
   const { data: messages, isLoading } = useConversationMessages(currentConversationId);
   const listRef = useRef<HTMLDivElement>(null);
 

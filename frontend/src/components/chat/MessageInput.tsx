@@ -14,7 +14,6 @@ export default function MessageInput() {
   const queryClient = useQueryClient();
   const {
     currentConversationId,
-    isStreaming,
     setIsStreaming,
     setStreamingContent,
     appendStreamingContent,
@@ -26,55 +25,55 @@ export default function MessageInput() {
   } = useChatStore();
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
+  // 读取当前对话的 isStreaming 状态
+  const currentIsStreaming = useChatStore(
+    (s) => s.currentConversationId ? (s.streamStates[s.currentConversationId]?.isStreaming ?? false) : false
+  );
+
   const handleSend = async () => {
     const text = inputValue.trim();
-    if (!text || !currentConversationId || isStreaming) return;
+    const convId = currentConversationId;
+    if (!text || !convId || useChatStore.getState().streamStates[convId]?.isStreaming) return;
 
     setInputValue('');
 
     // 乐观更新：直接写入 React Query cache，MessageList 立即显示
     const userMessage = {
       id: Date.now(),
-      conversation_id: currentConversationId,
+      conversation_id: convId,
       role: 'user' as const,
       content: text,
       created_at: new Date().toISOString(),
     };
     queryClient.setQueryData(
-      ['messages', currentConversationId],
+      ['messages', convId],
       (old: any[] | undefined) => [...(old || []), userMessage]
     );
 
-    setIsStreaming(true);
-    setStreamingContent('');
+    setIsStreaming(convId, true);
+    setStreamingContent(convId, '');
     setRagNotice(null);
 
-    await streamChat(currentConversationId, text, {
-      onChunk: (content) => {
-        appendStreamingContent(content);
-      },
+    await streamChat(convId, text, {
+      onChunk: (content) => appendStreamingContent(convId, content),
       onDone: () => {
-        finalizeStreaming();
-        queryClient.invalidateQueries({ queryKey: ['messages', currentConversationId] });
+        finalizeStreaming(convId);
+        queryClient.invalidateQueries({ queryKey: ['messages', convId] });
         queryClient.invalidateQueries({ queryKey: ['conversations'] });
       },
       onError: (error) => {
         message.error(error);
-        finalizeStreaming();
-        queryClient.invalidateQueries({ queryKey: ['messages', currentConversationId] });
+        finalizeStreaming(convId);
+        queryClient.invalidateQueries({ queryKey: ['messages', convId] });
       },
-      onQueueStatus: (pending, active) => {
-        setQueueStatus(pending, active);
-      },
+      onQueueStatus: (pending, active) => setQueueStatus(pending, active),
       onNotice: (notice) => {
-        setRagNotice(notice);
+        if (useChatStore.getState().currentConversationId === convId) {
+          setRagNotice(notice);
+        }
       },
-      onToolProgress: (tool, status) => {
-        setToolProgress({ tool, status });
-      },
-      onPreview: (url) => {
-        setPreviewUrl(url);
-      },
+      onToolProgress: (tool, status) => setToolProgress(convId, { tool, status }),
+      onPreview: (url) => setPreviewUrl(convId, url),
     });
   };
 
@@ -123,7 +122,7 @@ export default function MessageInput() {
             type="text"
             icon={<PaperClipOutlined />}
             loading={uploading}
-            disabled={!currentConversationId || isStreaming}
+            disabled={!currentConversationId || currentIsStreaming}
             style={{ color: 'var(--text-muted)', border: 'none' }}
           />
         </Upload>
@@ -134,7 +133,7 @@ export default function MessageInput() {
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder={currentConversationId ? '输入消息... (Enter 发送)' : '请先选择一个对话'}
-          disabled={!currentConversationId || isStreaming}
+          disabled={!currentConversationId || currentIsStreaming}
           autoSize={{ minRows: 1, maxRows: 6 }}
           style={{
             flex: 1,
@@ -153,8 +152,8 @@ export default function MessageInput() {
           shape="circle"
           icon={<SendOutlined style={{ fontSize: 14 }} />}
           onClick={handleSend}
-          loading={isStreaming}
-          disabled={!currentConversationId || !inputValue.trim() || isStreaming}
+          loading={currentIsStreaming}
+          disabled={!currentConversationId || !inputValue.trim() || currentIsStreaming}
           style={{
             flexShrink: 0,
             width: 36,

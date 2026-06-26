@@ -3,6 +3,654 @@
 ## 1. 项目概述
 
 ### 1.1 产品定位
+企业级对话 AI 平台，提供可扩展的 AI 对话能力，支持高并发、Wiki 知识库检索、代码生成与预览、管理员完全控制。
+
+### 1.2 目标用户
+- **管理员**: 管理 LLM 模型配置、提示词模板、Wiki 知识库文档、用户权限
+- **终端用户**: 与 AI 进行多轮对话，获取知识库支持的回答，生成前端页面并实时预览
+
+### 1.3 核心功能
+- 多轮对话管理（会话隔离、自动命名、上下文记忆）
+- **LLM 意图分类 + 三路路由**（知识问答 / 页面生成 / 闲聊拒绝）
+- **代码生成与动态预览**（Tool-call 循环 + 可点击预览链接）
+- Wiki 知识库（DeepSeek tool-call agent 检索 markdown 文档）
+- **多对话并行流式架构**（按 conversationId 隔离流式状态）
+- LLM 模型动态配置（API 地址、密钥、参数）
+- 提示词管理（创建、编辑、测试、激活）
+- 高并发排队机制（LLM 请求限流）
+- 用户认证与权限管理
+- 文件日志系统（双输出 + 自动轮转）
+
+---
+
+## 2. 技术架构
+
+### 2.1 整体架构图
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Frontend                              │
+│  React 18 + TypeScript + Zustand + TanStack Query + AntD 5  │
+│  ├─ streamStates (按 conversationId 隔离流式状态)             │
+│  ├─ SSE 流式通信 (多对话并行，不因切换而中断)                  │
+│  └─ CodePreview (可点击预览链接 + iframe)                     │
+└────────────────────────┬────────────────────────────────────┘
+                         │ HTTP + SSE
+┌────────────────────────▼────────────────────────────────────┐
+│                    Express.js Backend                         │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  LLM Workflow (POST /api/chat)                        │  │
+│  │  Step 1: Intent Classification (LLM, 含对话上下文)     │  │
+│  │  Step 2: Route Dispatch                               │  │
+│  │    ├─ knowledge_qa → wiki_query + streamLLM           │  │
+│  │    ├─ generate_page → tool-call 循环 + preview        │  │
+│  │    └─ casual_chat → 拒绝                              │  │
+│  └───────────────────────────────────────────────────────┘  │
+│  ┌──────────────────┐  ┌──────────────────────────────────┐ │
+│  │  LLM Queue       │  │  Code Generator (tool-call)      │ │
+│  │  (内存 FIFO)     │  │  demo_code/{conversationId}/     │ │
+│  │  并发控制 + 超时  │  │  6 tools: search/read/gen/...    │ │
+│  └──────────────────┘  └──────────────────────────────────┘ │
+└────────────┬───────────────────────┬────────────────────────┘
+             │                       │
+     ┌───────▼───────┐    ┌─────────▼────────────────────────┐
+     │   MySQL 8.0   │    │  Python Wiki Agent (subprocess)  │
+     │  users         │    │  wiki_query.py (DeepSeek agent) │
+     │  conversations │    │  wiki_agent.py (整理 agent)      │
+     │  messages      │    └─────────────────────────────────┘
+     │  settings      │              │
+     │  prompts       │    ┌─────────▼────────────────────────┐
+     └───────────────┘    │  DeepSeek API (tool-call)         │
+                          │  + 主 LLM API (流式 chat)          │
+                          └────────────────────────────────────┘
+```
+
+### 2.2 技术栈选型
+
+#### Frontend
+- **React 18**: 并发特性
+- **TypeScript**: 类型安全
+- **Zustand**: 轻量状态管理（streamStates 按 conversationId 隔离）
+- **TanStack Query (React Query)**: 服务端状态管理（消息列表缓存 + invalidate）
+- **Ant Design 5**: 企业级 UI 组件库
+- **Vite 6**: 快速构建工具
+- **React Router v6**: 路由管理
+- **dayjs**: 日期格式化
+
+#### Backend
+- **Node.js 18+ (ESM)**: 高性能运行时
+- **Express.js**: Web 框架
+- **mysql2/promise**: MySQL 连接池
+- **JWT (jsonwebtoken)**: 身份认证
+- **bcrypt**: 密码加密
+- **Multer**: 文件上传
+- **原生 fetch**: LLM API 调用（流式）
+
+#### Python Agent
+- **Python 3.8+**: Wiki agent 运行时
+- **requests**: HTTP 调用
+- **DeepSeek tool-call**: wiki_agent.py（整理） + wiki_query.py（检索）
+
+#### Infrastructure
+- **MySQL 8.0**: 关系型数据库（连接池）
+- **文件系统**: Wiki 文档存储、代码预览文件
+- **Docker**: 容器化部署
+- **PM2**: 进程管理
+
+---
+
+## 3. LLM Workflow 架构
+
+### 3.1 整体流程
+
+```
+用户消息 → LLM Queue 入队 → Intent Classification → Route Dispatch
+                                     │
+                    ┌────────────────┼────────────────┐
+                    ▼                ▼                ▼
+            knowledge_qa      generate_page      casual_chat
+            (知识问答)         (页面生成)          (闲聊拒绝)
+```
+
+### 3.2 Step 1: 意图分类 (Intent Classification)
+
+使用 LLM 进行意图分类，**包含对话上下文**（最近 6 条历史消息）以支持多轮对话场景。
+
+```javascript
+// 意图分类 Prompt
+const INTENT_CLASSIFICATION_PROMPT = `你是一个意图分类器。根据用户的对话上下文和最新消息，判断用户的意图：
+1. "knowledge_qa" - 知识问答
+2. "generate_page" - 生成/修改前端页面
+3. "casual_chat" - 闲聊
+
+注意：如果对话历史中包含页面生成任务，且用户最新消息是对之前生成内容的修改/追问，
+应判定为 "generate_page"。
+
+返回：{"intent": "knowledge_qa" 或 "generate_page" 或 "casual_chat"}`;
+
+// 构建意图分类消息（包含上下文）
+const recentHistory = truncatedMessages.slice(-6); // 最近 3 轮对话
+const intentMessages = [
+  { role: 'system', content: INTENT_CLASSIFICATION_PROMPT },
+  ...recentHistory,
+  { role: 'user', content: message }
+];
+
+// 非流式调用，temperature=0.1，max_tokens=50
+const intentBody = {
+  model: settings.llm_model,
+  messages: intentMessages,
+  stream: false,
+  temperature: 0.1,
+  max_tokens: 50
+};
+```
+
+**设计要点**：
+- 使用最近 6 条消息作为上下文（约 3 轮对话），确保多轮场景中准确识别修改页面的意图
+- temperature=0.1 保证分类稳定性
+- max_tokens=50 限制输出长度，加速分类
+- 默认 fallback 为 `knowledge_qa`
+- 分类结果通过 SSE 事件 `{ type: 'intent', intent }` 发送到前端
+
+### 3.3 Step 2: 三路路由分发
+
+#### Route A: knowledge_qa（知识问答）
+```
+1. searchKnowledge(message)
+   └─ execSync(wiki_query.py) → DeepSeek tool-call 检索 wiki
+2. knowledgeItems 注入 systemMessage
+3. streamLLMCall(messages, includeTools=false)
+   └─ 流式输出到 SSE
+```
+
+#### Route B: generate_page（页面生成）
+```
+1. systemMessage += CODE_GENERATION_PROMPT
+2. 非流式 LLM 调用 (tools=toolDefinitions, tool_choice='auto')
+3. Tool-call 循环（最多 10 次迭代）：
+   ├─ 执行 tool_call → executeToolCall(toolCall, conversationId)
+   ├─ 将结果追加到 messages
+   ├─ SSE 事件: { type: 'tool_progress', tool, status }
+   └─ 循环直到 finish_reason != 'tool_calls'
+4. 最终文本响应 → 流式或直接输出
+5. 动态预览 URL:
+   └─ { type: 'preview', url: `/preview/${conversationId}/${lastGeneratedFile}` }
+```
+
+#### Route C: casual_chat（闲聊拒绝）
+```
+直接返回拒绝消息 + 功能引导文本
+```
+
+### 3.4 会话级别上下文记忆
+
+```javascript
+const MAX_HISTORY_MESSAGES = 20;  // 最大历史消息数
+const MAX_CONTEXT_TOKENS = 8000;  // 最大上下文 token 数
+
+// Token-aware 截断策略：
+// 1. 限制最多 20 条消息
+// 2. 从最新到最旧逆序添加，直到 token 预算耗尽
+// 3. estimateTokenCount: Math.ceil(text.length / 3)
+for (let i = historyMessages.length - 1; i >= 0; i--) {
+  const msgTokens = estimateTokenCount(historyMessages[i].content);
+  if (remainingTokens - msgTokens < 0 && truncatedMessages.length > 0) break;
+  remainingTokens -= msgTokens;
+  truncatedMessages.unshift(historyMessages[i]);
+}
+```
+
+---
+
+## 4. 代码生成与预览
+
+### 4.1 Tool-call 循环
+
+代码生成使用 OpenAI function calling 协议，定义 6 个工具：
+
+| 工具 | 说明 |
+|------|------|
+| `search_codebase` | 搜索项目代码库中的代码片段 |
+| `read_file` | 读取文件内容（支持行范围） |
+| `get_project_structure` | 获取目录树结构 |
+| `get_symbol_definition` | 查找符号定义 |
+| `generate_code` | 生成/修改代码文件（create/append/insert/replace） |
+| `run_command` | 执行安全命令（白名单限制） |
+
+### 4.2 代码隔离
+
+每个 conversation 独立目录：`demo_code/{conversationId}/`
+
+```javascript
+// tools/code-generator.js
+export async function executeToolCall(toolCall, conversationId) {
+  const baseDir = path.join(process.cwd(), 'demo_code', conversationId);
+  await fs.mkdir(baseDir, { recursive: true });
+  // safePath() 确保路径不会逃逸出 baseDir
+}
+```
+
+### 4.3 动态预览 URL
+
+```javascript
+// 从 tool_call 参数提取实际文件名
+if (toolCall.function.name === 'generate_code') {
+  const args = JSON.parse(toolCall.function.arguments);
+  if (args.file_path) lastGeneratedFile = args.file_path;
+}
+
+// 生成预览 URL
+const previewUrl = `/preview/${conversationId}/${lastGeneratedFile}`;
+res.write(`data: ${JSON.stringify({ type: 'preview', url: previewUrl })}\n\n`);
+```
+
+### 4.4 预览服务
+
+```javascript
+// 静态文件服务，设置安全头
+app.use('/preview', express.static(path.join(__dirname, 'demo_code'), {
+  setHeaders: (res) => {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  }
+}));
+```
+
+### 4.5 前端 CodePreview 组件
+
+```tsx
+// 可点击的预览链接卡片 + iframe 预览
+<CodePreview url={previewUrl} />
+// - 显示完整 URL（可点击跳转）
+// - "点击打开 ↗" / "新窗口打开" 按钮
+// - iframe sandbox="allow-scripts allow-same-origin"
+```
+
+---
+
+## 5. 多对话并行流式架构
+
+### 5.1 核心设计
+
+流式状态按 `conversationId` 隔离，支持多个对话同时进行 SSE 流：
+
+```typescript
+// stores/chatStore.ts
+export interface ConversationStreamState {
+  isStreaming: boolean;        // 该对话是否正在流式输出
+  streamingContent: string;   // 该对话的流式内容缓冲
+  toolProgress: { tool: string; status: string } | null;  // 工具执行进度
+  previewUrl: string | null;  // 代码预览 URL
+}
+
+interface ChatState {
+  streamStates: Record<number, ConversationStreamState>;
+  // 所有流式操作都带 conversationId 参数
+  setIsStreaming: (conversationId: number, streaming: boolean) => void;
+  appendStreamingContent: (conversationId: number, chunk: string) => void;
+  setToolProgress: (conversationId: number, progress: {...} | null) => void;
+  setPreviewUrl: (conversationId: number, url: string | null) => void;
+  finalizeStreaming: (conversationId: number) => void;
+}
+```
+
+### 5.2 并行 SSE 关键机制
+
+```typescript
+// MessageInput.tsx - 发送消息时捕获 conversationId 快照
+const handleSend = async () => {
+  const convId = currentConversationId; // 快照
+
+  setIsStreaming(convId, true);
+  setStreamingContent(convId, '');
+
+  await streamChat(convId, text, {
+    onChunk: (content) => appendStreamingContent(convId, content),  // 写入快照 convId
+    onDone: () => finalizeStreaming(convId),
+    onToolProgress: (tool, status) => setToolProgress(convId, { tool, status }),
+    onPreview: (url) => setPreviewUrl(convId, url),
+  });
+};
+```
+
+**关键特性**：
+- 切换对话时不会中断后台 SSE 流（回调闭包绑定了 convId 快照）
+- 每个对话独立维护 isStreaming、streamingContent、toolProgress、previewUrl
+- MessageList 只渲染当前对话的 streamState
+- finalizeStreaming 将 streamingContent 合并为 assistant message 写入 messages
+
+### 5.3 SSE 通信协议
+
+```typescript
+// services/sse.ts - 事件类型
+interface StreamCallbacks {
+  onChunk: (content: string) => void;           // 文本 chunk
+  onDone: () => void;                           // 流结束
+  onError: (error: string) => void;             // 错误
+  onQueueStatus?: (pending, active) => void;    // 队列状态
+  onNotice?: (message: string) => void;         // RAG 降级通知
+  onToolProgress?: (tool, status) => void;      // 工具执行进度
+  onPreview?: (url: string) => void;            // 预览 URL
+}
+```
+
+SSE 数据格式：
+```
+data: {"content": "..."}           // 文本 chunk
+data: {"type": "queue", "pending": 2, "active": 3}
+data: {"type": "intent", "intent": "generate_page"}
+data: {"type": "notice", "message": "..."}
+data: {"type": "tool_progress", "tool": "generate_code", "status": "running"}
+data: {"type": "preview", "url": "/preview/1/index.html"}
+data: {"error": "..."}
+data: [DONE]
+```
+
+---
+
+## 6. 文件日志系统
+
+### 6.1 logger.js 实现
+
+```javascript
+// logger.js - 覆盖 console.log/error，实现双输出
+const LOG_FILE = path.join(__dirname, 'app.log');
+const MAX_SIZE = 10 * 1024 * 1024;  // 10MB 触发轮转
+const KEEP_SIZE = 5 * 1024 * 1024;  // 保留最后 5MB
+
+// 启动时检查：超过 10MB 则截断保留最后 5MB
+if (stat.size > MAX_SIZE) {
+  // 读取最后 5MB → 覆盖写入
+}
+
+const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+
+// 覆盖 console.log → 同时输出到终端和文件
+console.log = (...args) => {
+  originalLog(...args);                          // 终端输出
+  logStream.write(`[${timestamp()}] [INFO] ${msg}\n`);  // 文件输出
+};
+
+// 覆盖 console.error → 同上，标记 [ERROR]
+console.error = (...args) => {
+  originalError(...args);
+  logStream.write(`[${timestamp()}] [ERROR] ${msg}\n`);
+};
+```
+
+### 6.2 日志格式
+
+```
+[2026-06-26 14:30:25] [INFO] [chat] intent: generate_page | message: "帮我生成一个 TodoList"
+[2026-06-26 14:30:25] [ERROR] LLM API error: 429
+```
+
+### 6.3 加载时机
+
+```javascript
+// server.js 首行导入，确保所有后续 console 输出都被拦截
+import './logger.js';
+```
+
+---
+
+## 7. LLM 请求队列
+
+### 7.1 设计目标
+- 限制并发 LLM 请求数（防止 API 限流）
+- FIFO 公平排队
+- 用户可见的排队状态反馈
+- 超时自动取消
+
+### 7.2 实现（queue/llm-queue.js）
+
+```javascript
+class LLMQueue extends EventEmitter {
+  constructor(options = {}) {
+    this.queue = [];
+    this.activeRequests = 0;
+    this.maxConcurrent = options.maxConcurrent || process.env.LLM_MAX_CONCURRENT || 5;
+    this.timeoutMs = options.timeoutMs || process.env.LLM_REQUEST_TIMEOUT || 60000;
+  }
+
+  async enqueue(request, executeFn) {
+    // 1. 创建 queueItem，push 到 queue
+    // 2. 设置超时定时器
+    // 3. 触发 _processQueue()
+    return new Promise((resolve, reject) => { ... });
+  }
+
+  _processQueue() {
+    // activeRequests < maxConcurrent 时，从队头取出执行
+    while (this.activeRequests < this.maxConcurrent && this.queue.length > 0) {
+      const item = this.queue.shift();
+      this.activeRequests++;
+      this._executeRequest(item);
+    }
+  }
+
+  getStatus() {
+    return {
+      pending: this.queue.length,
+      active: this.activeRequests,
+      maxConcurrent: this.maxConcurrent,
+      estimatedWaitTime: this.queue.length * 5000  // 每请求约 5 秒
+    };
+  }
+}
+
+export default new LLMQueue();  // 全局单例
+```
+
+### 7.3 队列事件
+
+| 事件 | 触发时机 |
+|------|----------|
+| `enqueued` | 请求入队 |
+| `processing` | 开始执行 |
+| `completed` | 执行完成 |
+| `failed` | 执行失败 |
+| `timeout` | 队列超时 |
+| `status` | 状态变更 |
+
+### 7.4 前端排队提示
+
+当 `queueStatus.pending > 0` 时，后端 SSE 发送队列事件：
+```javascript
+res.write(`data: ${JSON.stringify({ type: 'queue', ...queueStatus })}\n\n`);
+```
+
+前端通过 `onQueueStatus` 回调接收并展示。
+
+---
+
+## 8. 数据库设计
+
+### 8.1 核心表结构
+
+#### users（用户表）
+```sql
+CREATE TABLE users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  username VARCHAR(50) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role ENUM('admin', 'user') DEFAULT 'user',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### conversations（对话表）
+```sql
+CREATE TABLE conversations (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  title VARCHAR(255),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+```
+
+#### messages（消息表）
+```sql
+CREATE TABLE messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  conversation_id INT NOT NULL,
+  role ENUM('user', 'assistant') NOT NULL,
+  content TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+```
+
+#### settings（配置表）
+```sql
+CREATE TABLE settings (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  setting_key VARCHAR(100) UNIQUE NOT NULL,
+  setting_value TEXT,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+#### prompts（提示词表）
+```sql
+CREATE TABLE prompts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  content TEXT NOT NULL,
+  is_active BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+---
+
+## 9. 服务启动流程
+
+### 9.1 server.js 启动序列
+
+```
+1. import './logger.js'           → 覆盖 console，启用文件日志
+2. dotenv.config()                → 加载 .env（按 __dirname 定位）
+3. 检测 frontend/dist             → 不存在则自动 npm install + build
+4. import app from './app.js'     → 加载 Express 应用
+5. ensureAdminUser()              → 确保默认管理员账户存在
+6. app.listen(PORT)               → 启动 HTTP 服务
+```
+
+### 9.2 环境配置
+
+```bash
+# .env 核心变量
+PORT=3000
+DB_HOST / DB_USER / DB_PASSWORD / DB_NAME
+JWT_SECRET
+DEEPSEEK_API_KEY          # Wiki agent 专用
+LLM_MAX_CONCURRENT=5     # 队列最大并发
+LLM_REQUEST_TIMEOUT=60000
+```
+
+---
+
+## 10. 前端架构
+
+### 10.1 项目结构
+
+```
+frontend/src/
+├── components/
+│   ├── chat/
+│   │   ├── MessageList.tsx      # 消息列表（读取当前对话 streamState）
+│   │   ├── MessageInput.tsx     # 输入组件（发送 + 多对话并行支持）
+│   │   ├── CodePreview.tsx      # 代码预览（可点击链接 + iframe）
+│   │   ├── ToolProgress.tsx     # 工具执行进度指示器
+│   │   ├── ConversationSidebar.tsx
+│   │   └── QueueIndicator.tsx
+│   ├── admin/
+│   │   ├── KnowledgeManagement.tsx
+│   │   ├── LLMSettings.tsx
+│   │   ├── PromptManagement.tsx
+│   │   └── UserManagement.tsx
+│   ├── ProtectedRoute.tsx
+│   └── AdminRoute.tsx
+├── pages/
+│   ├── ChatPage.tsx
+│   ├── LoginPage.tsx
+│   └── AdminPage.tsx
+├── stores/
+│   ├── chatStore.ts            # 核心：streamStates 按 conversationId 隔离
+│   └── authStore.ts
+├── services/
+│   ├── api.ts                  # REST API 调用
+│   └── sse.ts                  # SSE 流式通信
+├── hooks/
+│   ├── useConversations.ts     # TanStack Query hooks
+│   └── useAdminData.ts
+├── types/
+│   └── index.ts
+└── styles/
+    └── global.css
+```
+
+### 10.2 状态管理
+
+- **Zustand chatStore**: 流式状态（streamStates）、当前对话 ID、消息列表
+- **TanStack Query**: 服务端数据（对话列表、消息列表），自动缓存 + invalidate
+- **authStore**: JWT token、用户信息
+
+---
+
+## 11. 部署与监控
+
+### 11.1 Docker 部署
+
+```dockerfile
+FROM node:22-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+### 11.2 进程管理
+- PM2 管理 Node.js 进程
+- `restart.sh`: git pull → npm install → frontend build → pm2 restart
+
+### 11.3 日志
+- 文件日志: `app.log`（自动 10MB 轮转）
+- PM2 日志: `pm2 logs llm_test`
+- 结构化前缀: `[chat]`, `[classifyQuery]`, `[searchKnowledge]`
+
+---
+
+## 12. 安全性
+
+| 层面 | 措施 |
+|------|------|
+| 认证 | JWT + bcrypt hash (salt: 10) |
+| 授权 | requireAdmin 中间件 + user_id 数据隔离 |
+| 文件上传 | 10MB 限制 + 文件名 latin1→utf8 修复 |
+| SQL 注入 | mysql2 参数化查询 |
+| 代码生成 | safePath() 防止路径遍历，run_command 白名单 |
+| 预览安全 | X-Frame-Options + CSP frame-ancestors |
+| 跨域 | CORS（生产环境应限制 origin） |
+
+---
+
+**文档版本**: 2.0  
+**最后更新**: 2026-06-26  
+**作者**: AI Assistant
+# AI Chat Assistant 技术设计文档
+
+## 1. 项目概述
+
+### 1.1 产品定位
 企业级对话 AI 平台，提供可扩展的 AI 对话能力，支持高并发、知识库检索、管理员完全控制。
 
 ### 1.2 目标用户

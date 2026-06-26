@@ -1,3 +1,4 @@
+import './logger.js';
 import dotenv from 'dotenv';
 import { execSync } from 'child_process';
 import fs from 'fs';

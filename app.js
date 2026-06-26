@@ -826,38 +826,6 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const settings = await getLLMSettings();
     const activePrompt = await getActivePrompt();
 
-    // 先做意图分类：仅当判定为知识库问题时才查 Qdrant，闲聊直接走大模型
-    const needRetrieval = classifyQuery(message);
-
-    let knowledgeItems = [];
-    let ragFallback = false;
-    if (needRetrieval) {
-      try {
-        const searchResult = await searchKnowledge(message);
-        knowledgeItems = searchResult.items;
-        ragFallback = searchResult.fallback;
-      } catch (searchError) {
-        console.error('Knowledge search error:', searchError);
-        ragFallback = true;
-      }
-    }
-
-    // Build system message
-    let systemMessage = '';
-    if (activePrompt) {
-      systemMessage = activePrompt.content;
-    }
-
-    if (knowledgeItems.length > 0) {
-      systemMessage += '\n\n以下是从知识库中检索到的相关信息，请参考这些信息来回答用户的问题：\n\n';
-      knowledgeItems.forEach((item, index) => {
-        systemMessage += `【知识 ${index + 1}】\n标题：${item.title}\n内容：${item.content}\n来源：${item.knowledge_base_name}\n\n`;
-      });
-    }
-
-    // 追加代码生成指导
-    systemMessage += CODE_GENERATION_PROMPT;
-
     // Multi-turn context management: limit history + token estimation
     let historyMessages = allMessages;
     if (historyMessages.length > MAX_HISTORY_MESSAGES) {
@@ -866,8 +834,8 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
     // Token-aware truncation
     const maxTokens = parseInt(settings.llm_max_tokens) || 4096;
-    const systemTokens = estimateTokenCount(systemMessage);
-    let remainingTokens = MAX_CONTEXT_TOKENS - systemTokens;
+    const baseSystemEstimate = estimateTokenCount(activePrompt?.content || '');
+    let remainingTokens = MAX_CONTEXT_TOKENS - baseSystemEstimate;
     const truncatedMessages = [];
 
     // Add messages from newest to oldest, stop when token budget is exhausted
@@ -880,17 +848,6 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       truncatedMessages.unshift(historyMessages[i]);
     }
 
-    const llmMessages = [];
-    if (systemMessage) {
-      llmMessages.push({ role: 'system', content: systemMessage });
-    }
-    llmMessages.push(...truncatedMessages);
-
-    console.log(`[chat] activePrompt: ${activePrompt ? activePrompt.name : '无'} | needRetrieval: ${needRetrieval} | knowledgeItems: ${knowledgeItems.length} | systemMessage 长度: ${systemMessage.length} | 总消息数: ${llmMessages.length}`);
-    if (systemMessage) {
-      console.log(`[chat] systemMessage 内容: ${systemMessage.substring(0, 300)}`);
-    }
-
     // Set SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -901,11 +858,6 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
     const queueStatus = llmQueue.getStatus();
     if (queueStatus.pending > 0) {
       res.write(`data: ${JSON.stringify({ type: 'queue', ...queueStatus })}\n\n`);
-    }
-
-    // 仅当判定为知识库问题、且向量检索失败时提示用户（闲聊不检索，无提示）
-    if (needRetrieval && ragFallback) {
-      res.write(`data: ${JSON.stringify({ type: 'notice', message: '知识库检索失败，本次回答未参考知识库内容' })}\n\n`);
     }
 
     // Use LLM Queue for concurrency control
@@ -975,88 +927,112 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         }
       };
 
-      // ---- Phase 1: Non-streaming call to detect tool_calls ----
-      const toolCallBody = {
+      // ---- Step 1: Intent Classification via LLM ----
+      const INTENT_CLASSIFICATION_PROMPT = `你是一个意图分类器。根据用户的对话上下文和最新消息，判断用户的意图属于以下哪一类：
+
+1. "knowledge_qa" - 知识问答：用户在询问知识、查询信息、查找文档、提问技术问题等
+2. "generate_page" - 生成页面：用户要求创建、生成、制作前端页面、网页、UI组件，或者在之前生成页面的基础上要求修改、调整、优化页面（如改颜色、加功能、调布局等）
+3. "casual_chat" - 闲聊：用户在进行日常闲聊、打招呼、说无关话题等
+
+注意：如果对话历史中包含页面生成任务，且用户的最新消息是对之前生成内容的修改或追问，应判定为 "generate_page"。
+
+请只返回一个 JSON 对象，不要包含其他内容：
+{"intent": "knowledge_qa" 或 "generate_page" 或 "casual_chat"}`;
+
+      // Build intent classification messages with conversation context
+      const recentHistory = truncatedMessages.slice(-6); // last 3 rounds of dialogue
+      const intentMessages = [
+        { role: 'system', content: INTENT_CLASSIFICATION_PROMPT },
+        ...recentHistory,
+        { role: 'user', content: message }
+      ];
+
+      const intentBody = {
         model: settings.llm_model,
-        messages: llmMessages,
+        messages: intentMessages,
         stream: false,
-        tools: tools,
-        tool_choice: 'auto',
-        temperature: parseFloat(settings.llm_temperature) || 0.7,
-        max_tokens: maxTokens,
-        top_p: parseFloat(settings.llm_top_p) || 0.9
+        temperature: 0.1,
+        max_tokens: 50
       };
 
-      const firstResponse = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${settings.llm_api_key}`
-        },
-        body: JSON.stringify(toolCallBody)
-      });
+      let intent = 'knowledge_qa'; // default fallback
+      try {
+        const intentResp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${settings.llm_api_key}`
+          },
+          body: JSON.stringify(intentBody)
+        });
 
-      if (!firstResponse.ok) {
-        const errorText = await firstResponse.text().catch(() => '');
-        console.error('LLM API error:', firstResponse.status, errorText);
-        throw new Error(`LLM API error: ${firstResponse.status} ${errorText}`.trim());
-      }
-
-      const firstResult = await firstResponse.json();
-      const firstChoice = firstResult.choices?.[0];
-
-      if (!firstChoice) {
-        throw new Error('LLM returned empty choices');
-      }
-
-      let generatedPreview = false;
-      let lastGeneratedFile = 'index.html';
-
-      if (firstChoice.finish_reason === 'tool_calls' || firstChoice.message?.tool_calls?.length > 0) {
-        // ---- Tool-call loop ----
-        let toolCallMessages = [...llmMessages];
-        let hasToolCalls = true;
-        let iterations = 0;
-        const maxIterations = 10;
-
-        // Process the first tool-call response
-        toolCallMessages.push(firstChoice.message);
-
-        for (const toolCall of firstChoice.message.tool_calls) {
-          res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'running' })}\n\n`);
-          try {
-            const result = await executeToolCall(toolCall, conversationId.toString());
-            if (toolCall.function.name === 'generate_code') {
-              generatedPreview = true;
-              try {
-                const args = JSON.parse(toolCall.function.arguments);
-                if (args.file_path) lastGeneratedFile = args.file_path;
-              } catch (_) {}
-            }
-            toolCallMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: JSON.stringify(result)
-            });
-            res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'completed' })}\n\n`);
-          } catch (err) {
-            toolCallMessages.push({
-              role: 'tool',
-              tool_call_id: toolCall.id,
-              content: JSON.stringify({ error: err.message })
-            });
-            res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'error' })}\n\n`);
+        if (intentResp.ok) {
+          const intentResult = await intentResp.json();
+          const intentContent = intentResult.choices?.[0]?.message?.content || '';
+          const intentJson = JSON.parse(intentContent);
+          if (['knowledge_qa', 'generate_page', 'casual_chat'].includes(intentJson.intent)) {
+            intent = intentJson.intent;
           }
         }
-        iterations++;
+      } catch (err) {
+        console.error('[chat] Intent classification failed, defaulting to knowledge_qa:', err.message);
+      }
 
-        // Continue loop: keep calling LLM until it stops returning tool_calls
-        while (hasToolCalls && iterations < maxIterations) {
-          iterations++;
+      console.log(`[chat] intent: ${intent} | message: "${message.substring(0, 30)}"`);
 
-          const loopBody = {
+      // Send intent event to client
+      res.write(`data: ${JSON.stringify({ type: 'intent', intent })}\n\n`);
+
+      // ---- Step 2: Route Dispatch ----
+      switch (intent) {
+        case 'knowledge_qa': {
+          // 1. Call searchKnowledge
+          let knowledgeItems = [];
+          let ragFallback = false;
+          try {
+            const result = await searchKnowledge(message);
+            knowledgeItems = result.items;
+            ragFallback = result.fallback;
+          } catch (err) {
+            console.error('Knowledge search error:', err.message);
+            ragFallback = true;
+          }
+
+          // 2. Build system message (no CODE_GENERATION_PROMPT)
+          let systemMessage = activePrompt?.content || '';
+          if (knowledgeItems.length > 0) {
+            systemMessage += '\n\n以下是从知识库中检索到的相关信息，请参考这些信息来回答用户的问题：\n\n';
+            knowledgeItems.forEach((item, index) => {
+              systemMessage += `【知识 ${index + 1}】\n标题：${item.title}\n内容：${item.content}\n来源：${item.knowledge_base_name}\n\n`;
+            });
+          }
+
+          // 3. Send fallback notice
+          if (ragFallback) {
+            res.write(`data: ${JSON.stringify({ type: 'notice', message: '知识库检索失败，本次回答未参考知识库内容' })}\n\n`);
+          }
+
+          // 4. Build llmMessages and call streamLLMCall (no tools)
+          const kqaMessages = [
+            { role: 'system', content: systemMessage },
+            ...truncatedMessages
+          ];
+          await streamLLMCall(kqaMessages, false);
+          break;
+        }
+
+        case 'generate_page': {
+          // Build system message with CODE_GENERATION_PROMPT
+          const gpSystemMessage = (activePrompt?.content || '') + CODE_GENERATION_PROMPT;
+          const gpMessages = [
+            { role: 'system', content: gpSystemMessage },
+            ...truncatedMessages
+          ];
+
+          // Non-streaming call to detect tool_calls
+          const toolCallBody = {
             model: settings.llm_model,
-            messages: toolCallMessages,
+            messages: gpMessages,
             stream: false,
             tools: tools,
             tool_choice: 'auto',
@@ -1065,33 +1041,41 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             top_p: parseFloat(settings.llm_top_p) || 0.9
           };
 
-          const loopResponse = await fetch(apiUrl, {
+          const firstResponse = await fetch(apiUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${settings.llm_api_key}`
             },
-            body: JSON.stringify(loopBody)
+            body: JSON.stringify(toolCallBody)
           });
 
-          if (!loopResponse.ok) {
-            const errorText = await loopResponse.text().catch(() => '');
-            console.error('LLM API error (tool loop):', loopResponse.status, errorText);
-            throw new Error(`LLM API error: ${loopResponse.status} ${errorText}`.trim());
+          if (!firstResponse.ok) {
+            const errorText = await firstResponse.text().catch(() => '');
+            console.error('LLM API error:', firstResponse.status, errorText);
+            throw new Error(`LLM API error: ${firstResponse.status} ${errorText}`.trim());
           }
 
-          const loopResult = await loopResponse.json();
-          const loopChoice = loopResult.choices?.[0];
+          const firstResult = await firstResponse.json();
+          const firstChoice = firstResult.choices?.[0];
 
-          if (!loopChoice) {
-            hasToolCalls = false;
-            break;
+          if (!firstChoice) {
+            throw new Error('LLM returned empty choices');
           }
 
-          if (loopChoice.finish_reason === 'tool_calls' || loopChoice.message?.tool_calls?.length > 0) {
-            toolCallMessages.push(loopChoice.message);
+          let generatedPreview = false;
+          let lastGeneratedFile = 'index.html';
 
-            for (const toolCall of loopChoice.message.tool_calls) {
+          if (firstChoice.finish_reason === 'tool_calls' || firstChoice.message?.tool_calls?.length > 0) {
+            // Tool-call loop
+            let toolCallMessages = [...gpMessages];
+            let hasToolCalls = true;
+            let iterations = 0;
+            const maxIterations = 10;
+
+            toolCallMessages.push(firstChoice.message);
+
+            for (const toolCall of firstChoice.message.tool_calls) {
               res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'running' })}\n\n`);
               try {
                 const result = await executeToolCall(toolCall, conversationId.toString());
@@ -1117,82 +1101,116 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                 res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'error' })}\n\n`);
               }
             }
-          } else {
-            // LLM returned text, no more tool_calls
-            hasToolCalls = false;
+            iterations++;
 
-            if (loopChoice.message?.content) {
-              fullResponse = loopChoice.message.content;
-              res.write(`data: ${JSON.stringify({ content: fullResponse })}\n\n`);
-            }
-          }
-        }
+            while (hasToolCalls && iterations < maxIterations) {
+              iterations++;
 
-        // If tool-call loop ended without a final text response, do a streaming call to get summary
-        if (!fullResponse) {
-          const finalBody = {
-            model: settings.llm_model,
-            messages: toolCallMessages,
-            stream: true,
-            temperature: parseFloat(settings.llm_temperature) || 0.7,
-            max_tokens: maxTokens,
-            top_p: parseFloat(settings.llm_top_p) || 0.9
-          };
+              const loopBody = {
+                model: settings.llm_model,
+                messages: toolCallMessages,
+                stream: false,
+                tools: tools,
+                tool_choice: 'auto',
+                temperature: parseFloat(settings.llm_temperature) || 0.7,
+                max_tokens: maxTokens,
+                top_p: parseFloat(settings.llm_top_p) || 0.9
+              };
 
-          const finalResp = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${settings.llm_api_key}`
-            },
-            body: JSON.stringify(finalBody)
-          });
+              const loopResponse = await fetch(apiUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${settings.llm_api_key}`
+                },
+                body: JSON.stringify(loopBody)
+              });
 
-          if (!finalResp.ok) {
-            const errorText = await finalResp.text().catch(() => '');
-            throw new Error(`LLM API error: ${finalResp.status} ${errorText}`.trim());
-          }
+              if (!loopResponse.ok) {
+                const errorText = await loopResponse.text().catch(() => '');
+                console.error('LLM API error (tool loop):', loopResponse.status, errorText);
+                throw new Error(`LLM API error: ${loopResponse.status} ${errorText}`.trim());
+              }
 
-          const reader = finalResp.body.getReader();
-          const decoder = new TextDecoder();
+              const loopResult = await loopResponse.json();
+              const loopChoice = loopResult.choices?.[0];
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+              if (!loopChoice) {
+                hasToolCalls = false;
+                break;
+              }
 
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n').filter(line => line.trim());
+              if (loopChoice.finish_reason === 'tool_calls' || loopChoice.message?.tool_calls?.length > 0) {
+                toolCallMessages.push(loopChoice.message);
 
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') continue;
-
-                try {
-                  const parsed = JSON.parse(data);
-                  const content = parsed.choices?.[0]?.delta?.content || '';
-
-                  if (content) {
-                    fullResponse += content;
-                    res.write(`data: ${JSON.stringify({ content })}\n\n`);
+                for (const toolCall of loopChoice.message.tool_calls) {
+                  res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'running' })}\n\n`);
+                  try {
+                    const result = await executeToolCall(toolCall, conversationId.toString());
+                    if (toolCall.function.name === 'generate_code') {
+                      generatedPreview = true;
+                      try {
+                        const args = JSON.parse(toolCall.function.arguments);
+                        if (args.file_path) lastGeneratedFile = args.file_path;
+                      } catch (_) {}
+                    }
+                    toolCallMessages.push({
+                      role: 'tool',
+                      tool_call_id: toolCall.id,
+                      content: JSON.stringify(result)
+                    });
+                    res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'completed' })}\n\n`);
+                  } catch (err) {
+                    toolCallMessages.push({
+                      role: 'tool',
+                      tool_call_id: toolCall.id,
+                      content: JSON.stringify({ error: err.message })
+                    });
+                    res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'error' })}\n\n`);
                   }
-                } catch (e) {
-                  // Skip invalid JSON
+                }
+              } else {
+                hasToolCalls = false;
+                if (loopChoice.message?.content) {
+                  fullResponse = loopChoice.message.content;
+                  res.write(`data: ${JSON.stringify({ content: fullResponse })}\n\n`);
                 }
               }
             }
+
+            // If tool-call loop ended without a final text response, do a streaming call
+            if (!fullResponse) {
+              await streamLLMCall(toolCallMessages, false);
+            }
+
+            // Send preview link if code was generated
+            if (generatedPreview) {
+              const previewUrl = `/preview/${conversationId}/${lastGeneratedFile}`;
+              res.write(`data: ${JSON.stringify({ type: 'preview', url: previewUrl })}\n\n`);
+            }
+          } else {
+            // No tool_calls: stream the response
+            await streamLLMCall(gpMessages, false);
           }
+          break;
         }
 
-        // Send preview link if code was generated
-        if (generatedPreview) {
-          const previewUrl = `/preview/${conversationId}/${lastGeneratedFile}`;
-          res.write(`data: ${JSON.stringify({ type: 'preview', url: previewUrl })}\n\n`);
+        case 'casual_chat': {
+          const rejectMessage = '对不起，当前系统不支持闲聊能力。\n\n您可以尝试以下功能：\n1. **知识库问答** - 询问技术文档、知识库相关内容\n2. **页面生成** - 例如"帮我生成一个 TodoList 页面"';
+          res.write(`data: ${JSON.stringify({ content: rejectMessage })}\n\n`);
+          fullResponse = rejectMessage;
+          break;
         }
-      } else {
-        // ---- No tool_calls: plain text response → re-do as streaming ----
-        // The first non-streaming call returned text. Stream it for consistent UX.
-        await streamLLMCall(llmMessages, false);
+
+        default: {
+          // Fallback: treat as knowledge_qa with no retrieval
+          const fallbackMessages = [
+            { role: 'system', content: activePrompt?.content || '' },
+            ...truncatedMessages
+          ];
+          await streamLLMCall(fallbackMessages, false);
+          break;
+        }
       }
 
       // Save assistant response
