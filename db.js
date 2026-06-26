@@ -7,14 +7,41 @@ import fs from 'fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 按脚本所在目录加载 .env，与 cwd 解耦（db.js 在 import 阶段就会建连接池，
 // 此时 server.js 的 dotenv 还没执行，所以必须在此处用绝对路径加载）
+// 根据 NODE_ENV 选择对应的 .env 文件，避免线上意外加载 .env.development
+const nodeEnv = process.env.NODE_ENV || 'development';
 const envPath = path.join(__dirname, '.env');
+const envEnvPath = path.join(__dirname, `.env.${nodeEnv}`);
 const envDevPath = path.join(__dirname, '.env.development');
-dotenv.config({ path: fs.existsSync(envPath) ? envPath : envDevPath });
+
+// 优先级：.env > .env.{NODE_ENV} > .env.development（仅 development 环境才回退到 .env.development）
+let selectedEnvPath;
+if (fs.existsSync(envPath)) {
+  selectedEnvPath = envPath;
+} else if (fs.existsSync(envEnvPath)) {
+  selectedEnvPath = envEnvPath;
+} else if (nodeEnv === 'development') {
+  selectedEnvPath = envDevPath;
+} else {
+  // 非 development 环境下不回退到 .env.development，避免线上加载 mock 配置
+  selectedEnvPath = envPath; // 即使不存在也不用 .env.development
+}
+dotenv.config({ path: selectedEnvPath });
 
 let pool;
 let checkHealth;
 
-if (process.env.USE_MOCK_DB === 'true') {
+// 安全检查：production / staging 环境下强制禁用 mock 模式，防止线上误用内存数据库
+const isMockRequested = process.env.USE_MOCK_DB === 'true';
+const isProductionLike = nodeEnv === 'production' || nodeEnv === 'staging';
+
+if (isMockRequested && isProductionLike) {
+  console.warn(
+    `⚠️  USE_MOCK_DB=true detected but NODE_ENV=${nodeEnv}. ` +
+    `Mock DB is NOT allowed in production/staging. Falling back to real database.`
+  );
+}
+
+if (isMockRequested && !isProductionLike) {
   // ==================== Mock Mode (内存存储，不连接 MySQL) ====================
   console.log('🧪 Mock DB mode enabled (USE_MOCK_DB=true)');
 
