@@ -21,6 +21,8 @@ export default function MessageInput() {
     finalizeStreaming,
     setQueueStatus,
     setRagNotice,
+    setToolProgress,
+    setPreviewUrl,
   } = useChatStore();
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -66,6 +68,12 @@ export default function MessageInput() {
       },
       onNotice: (notice) => {
         setRagNotice(notice);
+      },
+      onToolProgress: (tool, status) => {
+        setToolProgress({ tool, status });
+      },
+      onPreview: (url) => {
+        setPreviewUrl(url);
       },
     });
   };

@@ -39,7 +39,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   previewUrl: null,
 
   setCurrentConversation: (id) =>
-    set({ currentConversationId: id, messages: [], streamingContent: '' }),
+    set({ currentConversationId: id, messages: [], streamingContent: '', previewUrl: null, toolProgress: null }),
 
   setMessages: (messages) => set({ messages }),
 
@@ -48,7 +48,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setIsStreaming: (streaming) => {
     if (streaming) {
-      set({ isStreaming: true, toolProgress: null, previewUrl: null });
+      set({ isStreaming: true, toolProgress: null });
     } else {
       set({ isStreaming: false });
     }

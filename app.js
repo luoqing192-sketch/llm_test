@@ -1010,6 +1010,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       }
 
       let generatedPreview = false;
+      let lastGeneratedFile = 'index.html';
 
       if (firstChoice.finish_reason === 'tool_calls' || firstChoice.message?.tool_calls?.length > 0) {
         // ---- Tool-call loop ----
@@ -1027,6 +1028,10 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
             const result = await executeToolCall(toolCall, conversationId.toString());
             if (toolCall.function.name === 'generate_code') {
               generatedPreview = true;
+              try {
+                const args = JSON.parse(toolCall.function.arguments);
+                if (args.file_path) lastGeneratedFile = args.file_path;
+              } catch (_) {}
             }
             toolCallMessages.push({
               role: 'tool',
@@ -1092,6 +1097,10 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
                 const result = await executeToolCall(toolCall, conversationId.toString());
                 if (toolCall.function.name === 'generate_code') {
                   generatedPreview = true;
+                  try {
+                    const args = JSON.parse(toolCall.function.arguments);
+                    if (args.file_path) lastGeneratedFile = args.file_path;
+                  } catch (_) {}
                 }
                 toolCallMessages.push({
                   role: 'tool',
@@ -1177,7 +1186,7 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
         // Send preview link if code was generated
         if (generatedPreview) {
-          const previewUrl = `/preview/${conversationId}/index.html`;
+          const previewUrl = `/preview/${conversationId}/${lastGeneratedFile}`;
           res.write(`data: ${JSON.stringify({ type: 'preview', url: previewUrl })}\n\n`);
         }
       } else {
