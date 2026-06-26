@@ -9,6 +9,8 @@ interface ChatState {
   ragNotice: string | null;
   queuePending: number;
   queueActive: number;
+  toolProgress: { tool: string; status: string } | null;
+  previewUrl: string | null;
 
   setCurrentConversation: (id: number | null) => void;
   setMessages: (messages: Message[]) => void;
@@ -19,6 +21,9 @@ interface ChatState {
   setRagNotice: (notice: string | null) => void;
   finalizeStreaming: () => void;
   setQueueStatus: (pending: number, active: number) => void;
+  setToolProgress: (progress: { tool: string; status: string } | null) => void;
+  setPreviewUrl: (url: string | null) => void;
+  clearCodeGenState: () => void;
   reset: () => void;
 }
 
@@ -30,6 +35,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   ragNotice: null,
   queuePending: 0,
   queueActive: 0,
+  toolProgress: null,
+  previewUrl: null,
 
   setCurrentConversation: (id) =>
     set({ currentConversationId: id, messages: [], streamingContent: '' }),
@@ -39,7 +46,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (message) =>
     set((state) => ({ messages: [...state.messages, message] })),
 
-  setIsStreaming: (streaming) => set({ isStreaming: streaming }),
+  setIsStreaming: (streaming) => {
+    if (streaming) {
+      set({ isStreaming: true, toolProgress: null, previewUrl: null });
+    } else {
+      set({ isStreaming: false });
+    }
+  },
 
   setStreamingContent: (content) => set({ streamingContent: content }),
 
@@ -72,6 +85,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setQueueStatus: (pending, active) =>
     set({ queuePending: pending, queueActive: active }),
 
+  setToolProgress: (progress) => set({ toolProgress: progress }),
+
+  setPreviewUrl: (url) => set({ previewUrl: url }),
+
+  clearCodeGenState: () => set({ toolProgress: null, previewUrl: null }),
+
   reset: () =>
     set({
       currentConversationId: null,
@@ -81,5 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ragNotice: null,
       queuePending: 0,
       queueActive: 0,
+      toolProgress: null,
+      previewUrl: null,
     }),
 }));

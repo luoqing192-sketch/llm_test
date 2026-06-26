@@ -6,6 +6,8 @@ export interface StreamCallbacks {
   onError: (error: string) => void;
   onQueueStatus?: (pending: number, active: number) => void;
   onNotice?: (message: string) => void;
+  onToolProgress?: (tool: string, status: string) => void;
+  onPreview?: (url: string) => void;
 }
 
 export async function streamChat(
@@ -66,6 +68,16 @@ export async function streamChat(
 
           if (event.type === 'notice' && callbacks.onNotice) {
             callbacks.onNotice(event.message || '');
+            continue;
+          }
+
+          if (event.type === 'tool_progress') {
+            callbacks.onToolProgress?.(event.tool || '', event.status || '');
+            continue;
+          }
+
+          if (event.type === 'preview') {
+            callbacks.onPreview?.(event.url || '');
             continue;
           }
 

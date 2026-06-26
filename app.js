@@ -11,8 +11,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { splitTextIntoChunks, extractTextFromBuffer } from './text-splitter.js';
 import llmQueue from './queue/llm-queue.js';
+import { toolDefinitions, executeToolCall } from './tools/code-generator.js';
 
 dotenv.config();
+
+const CODE_GENERATION_PROMPT = `\n\n## 代码生成能力\n\n你具备前端代码生成和文件操作能力。当用户要求你创建、修改前端页面或 Web 应用时，请使用以下工具：\n\n### 工作流程\n1. 如果是新项目，先使用 get_project_structure 查看当前已有文件\n2. 使用 generate_code 工具创建文件，每个项目必须包含 index.html 作为入口文件\n3. 使用 read_file 验证生成的文件内容是否正确\n4. 如需修改已有文件，先 read_file 了解内容，再用 generate_code 的 replace/insert/append 模式修改\n5. 可选：使用 search_codebase 搜索已有代码中的相关实现作为参考\n\n### 代码生成规则\n- 根据用户需求复杂度自行决定技术方案：简单页面用纯 HTML/CSS/JS，复杂交互可引入框架\n- 所有生成的项目必须有 index.html 作为入口，确保可以直接在浏览器中打开预览\n- CSS 样式直接写在 HTML 文件的 <style> 标签中，或创建独立的 .css 文件并在 HTML 中引用\n- JavaScript 代码可以内联在 <script> 标签中，或创建独立的 .js 文件并引用\n- 确保生成的代码美观、可用、符合现代 Web 标准\n- 使用中文作为界面语言（除非用户要求其他语言）\n\n### 注意事项\n- 只在用户明确要求生成前端页面/组件/应用时才使用这些工具\n- 普通的聊天对话、知识问答不要使用这些工具\n- 如果用户要求修改之前生成的页面，使用 read_file 和 get_project_structure 了解现有代码后再修改`;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +24,12 @@ const __dirname = path.dirname(__filename);
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Initialize demo_code directory for code preview
+const demoCodeDir = path.join(__dirname, 'demo_code');
+if (!fs.existsSync(demoCodeDir)) {
+  fs.mkdirSync(demoCodeDir, { recursive: true });
 }
 
 // Configure multer for file uploads
@@ -45,6 +54,14 @@ const upload = multer({
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// 预览服务 - 静态文件服务用于代码预览
+app.use('/preview', express.static(path.join(__dirname, 'demo_code'), {
+  setHeaders: (res) => {
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  }
+}));
 
 // Serve React frontend build (primary frontend)
 const frontendDistPath = path.join(__dirname, 'frontend', 'dist');
@@ -838,6 +855,9 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
       });
     }
 
+    // 追加代码生成指导
+    systemMessage += CODE_GENERATION_PROMPT;
+
     // Multi-turn context management: limit history + token estimation
     let historyMessages = allMessages;
     if (historyMessages.length > MAX_HISTORY_MESSAGES) {
@@ -890,57 +910,280 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
 
     // Use LLM Queue for concurrency control
     await llmQueue.enqueue({}, async () => {
-      const response = await fetch(settings.llm_base_url, {
+      const apiUrl = settings.llm_base_url;
+      const tools = toolDefinitions;
+      let fullResponse = '';
+
+      // ---- Helper: stream an LLM call and accumulate fullResponse ----
+      const streamLLMCall = async (messages, includTools) => {
+        const body = {
+          model: settings.llm_model,
+          messages,
+          stream: true,
+          temperature: parseFloat(settings.llm_temperature) || 0.7,
+          max_tokens: maxTokens,
+          top_p: parseFloat(settings.llm_top_p) || 0.9
+        };
+        if (includTools) {
+          body.tools = tools;
+          body.tool_choice = 'auto';
+        }
+
+        const resp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${settings.llm_api_key}`
+          },
+          body: JSON.stringify(body)
+        });
+
+        if (!resp.ok) {
+          const errorText = await resp.text().catch(() => '');
+          console.error('LLM API error:', resp.status, errorText);
+          throw new Error(`LLM API error: ${resp.status} ${errorText}`.trim());
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n').filter(line => line.trim());
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content || '';
+
+                if (content) {
+                  fullResponse += content;
+                  res.write(`data: ${JSON.stringify({ content })}\n\n`);
+                }
+              } catch (e) {
+                // Skip invalid JSON
+              }
+            }
+          }
+        }
+      };
+
+      // ---- Phase 1: Non-streaming call to detect tool_calls ----
+      const toolCallBody = {
+        model: settings.llm_model,
+        messages: llmMessages,
+        stream: false,
+        tools: tools,
+        tool_choice: 'auto',
+        temperature: parseFloat(settings.llm_temperature) || 0.7,
+        max_tokens: maxTokens,
+        top_p: parseFloat(settings.llm_top_p) || 0.9
+      };
+
+      const firstResponse = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${settings.llm_api_key}`
         },
-        body: JSON.stringify({
-          model: settings.llm_model,
-          messages: llmMessages,
-          stream: true,
-          temperature: parseFloat(settings.llm_temperature) || 0.7,
-          max_tokens: maxTokens,
-          top_p: parseFloat(settings.llm_top_p) || 0.9
-        })
+        body: JSON.stringify(toolCallBody)
       });
 
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => '');
-        console.error('LLM API error:', response.status, errorText);
-        throw new Error(`LLM API error: ${response.status} ${errorText}`.trim());
+      if (!firstResponse.ok) {
+        const errorText = await firstResponse.text().catch(() => '');
+        console.error('LLM API error:', firstResponse.status, errorText);
+        throw new Error(`LLM API error: ${firstResponse.status} ${errorText}`.trim());
       }
 
-      let fullResponse = '';
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      const firstResult = await firstResponse.json();
+      const firstChoice = firstResult.choices?.[0];
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      if (!firstChoice) {
+        throw new Error('LLM returned empty choices');
+      }
 
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n').filter(line => line.trim());
+      let generatedPreview = false;
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
+      if (firstChoice.finish_reason === 'tool_calls' || firstChoice.message?.tool_calls?.length > 0) {
+        // ---- Tool-call loop ----
+        let toolCallMessages = [...llmMessages];
+        let hasToolCalls = true;
+        let iterations = 0;
+        const maxIterations = 10;
 
-            try {
-              const parsed = JSON.parse(data);
-              const content = parsed.choices?.[0]?.delta?.content || '';
+        // Process the first tool-call response
+        toolCallMessages.push(firstChoice.message);
 
-              if (content) {
-                fullResponse += content;
-                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        for (const toolCall of firstChoice.message.tool_calls) {
+          res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'running' })}\n\n`);
+          try {
+            const result = await executeToolCall(toolCall, conversationId.toString());
+            if (toolCall.function.name === 'generate_code') {
+              generatedPreview = true;
+            }
+            toolCallMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: JSON.stringify(result)
+            });
+            res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'completed' })}\n\n`);
+          } catch (err) {
+            toolCallMessages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              content: JSON.stringify({ error: err.message })
+            });
+            res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'error' })}\n\n`);
+          }
+        }
+        iterations++;
+
+        // Continue loop: keep calling LLM until it stops returning tool_calls
+        while (hasToolCalls && iterations < maxIterations) {
+          iterations++;
+
+          const loopBody = {
+            model: settings.llm_model,
+            messages: toolCallMessages,
+            stream: false,
+            tools: tools,
+            tool_choice: 'auto',
+            temperature: parseFloat(settings.llm_temperature) || 0.7,
+            max_tokens: maxTokens,
+            top_p: parseFloat(settings.llm_top_p) || 0.9
+          };
+
+          const loopResponse = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${settings.llm_api_key}`
+            },
+            body: JSON.stringify(loopBody)
+          });
+
+          if (!loopResponse.ok) {
+            const errorText = await loopResponse.text().catch(() => '');
+            console.error('LLM API error (tool loop):', loopResponse.status, errorText);
+            throw new Error(`LLM API error: ${loopResponse.status} ${errorText}`.trim());
+          }
+
+          const loopResult = await loopResponse.json();
+          const loopChoice = loopResult.choices?.[0];
+
+          if (!loopChoice) {
+            hasToolCalls = false;
+            break;
+          }
+
+          if (loopChoice.finish_reason === 'tool_calls' || loopChoice.message?.tool_calls?.length > 0) {
+            toolCallMessages.push(loopChoice.message);
+
+            for (const toolCall of loopChoice.message.tool_calls) {
+              res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'running' })}\n\n`);
+              try {
+                const result = await executeToolCall(toolCall, conversationId.toString());
+                if (toolCall.function.name === 'generate_code') {
+                  generatedPreview = true;
+                }
+                toolCallMessages.push({
+                  role: 'tool',
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify(result)
+                });
+                res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'completed' })}\n\n`);
+              } catch (err) {
+                toolCallMessages.push({
+                  role: 'tool',
+                  tool_call_id: toolCall.id,
+                  content: JSON.stringify({ error: err.message })
+                });
+                res.write(`data: ${JSON.stringify({ type: 'tool_progress', tool: toolCall.function.name, status: 'error' })}\n\n`);
               }
-            } catch (e) {
-              // Skip invalid JSON
+            }
+          } else {
+            // LLM returned text, no more tool_calls
+            hasToolCalls = false;
+
+            if (loopChoice.message?.content) {
+              fullResponse = loopChoice.message.content;
+              res.write(`data: ${JSON.stringify({ content: fullResponse })}\n\n`);
             }
           }
         }
+
+        // If tool-call loop ended without a final text response, do a streaming call to get summary
+        if (!fullResponse) {
+          const finalBody = {
+            model: settings.llm_model,
+            messages: toolCallMessages,
+            stream: true,
+            temperature: parseFloat(settings.llm_temperature) || 0.7,
+            max_tokens: maxTokens,
+            top_p: parseFloat(settings.llm_top_p) || 0.9
+          };
+
+          const finalResp = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${settings.llm_api_key}`
+            },
+            body: JSON.stringify(finalBody)
+          });
+
+          if (!finalResp.ok) {
+            const errorText = await finalResp.text().catch(() => '');
+            throw new Error(`LLM API error: ${finalResp.status} ${errorText}`.trim());
+          }
+
+          const reader = finalResp.body.getReader();
+          const decoder = new TextDecoder();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n').filter(line => line.trim());
+
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+
+                try {
+                  const parsed = JSON.parse(data);
+                  const content = parsed.choices?.[0]?.delta?.content || '';
+
+                  if (content) {
+                    fullResponse += content;
+                    res.write(`data: ${JSON.stringify({ content })}\n\n`);
+                  }
+                } catch (e) {
+                  // Skip invalid JSON
+                }
+              }
+            }
+          }
+        }
+
+        // Send preview link if code was generated
+        if (generatedPreview) {
+          const previewUrl = `/preview/${conversationId}/index.html`;
+          res.write(`data: ${JSON.stringify({ type: 'preview', url: previewUrl })}\n\n`);
+        }
+      } else {
+        // ---- No tool_calls: plain text response → re-do as streaming ----
+        // The first non-streaming call returned text. Stream it for consistent UX.
+        await streamLLMCall(llmMessages, false);
       }
 
       // Save assistant response

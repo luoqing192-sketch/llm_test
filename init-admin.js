@@ -9,6 +9,11 @@ const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = '123456';
 
 export async function ensureAdminUser() {
+  if (process.env.USE_MOCK_DB === 'true') {
+    console.log('✅ Mock 模式: admin 用户已预置');
+    return;
+  }
+
   try {
     // 检查是否已存在
     const [existing] = await pool.query(

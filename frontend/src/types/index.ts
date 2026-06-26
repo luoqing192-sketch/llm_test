@@ -74,8 +74,11 @@ export interface QueueStatus {
 export interface ChatStreamEvent {
   content?: string;
   error?: string;
-  type?: 'queue' | 'notice';
+  type?: 'queue' | 'notice' | 'tool_progress' | 'preview';
   message?: string;
   pending?: number;
   active?: number;
+  tool?: string;
+  status?: string;
+  url?: string;
 }

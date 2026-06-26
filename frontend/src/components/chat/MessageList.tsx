@@ -3,10 +3,12 @@ import { Typography, Avatar, Spin, Alert } from 'antd';
 import { RobotOutlined, UserOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { useConversationMessages } from '@/hooks/useConversations';
+import CodePreview from './CodePreview';
+import ToolProgress from './ToolProgress';
 import dayjs from 'dayjs';
 
 export default function MessageList() {
-  const { currentConversationId, isStreaming, streamingContent, ragNotice } = useChatStore();
+  const { currentConversationId, isStreaming, streamingContent, ragNotice, toolProgress, previewUrl } = useChatStore();
   const { data: messages, isLoading } = useConversationMessages(currentConversationId);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -82,12 +84,24 @@ export default function MessageList() {
         />
       )}
 
+      {isStreaming && toolProgress && (
+        <div style={{ marginLeft: 52 }}>
+          <ToolProgress tool={toolProgress.tool} status={toolProgress.status} />
+        </div>
+      )}
+
       {isStreaming && (
         <MessageBubble
           role="assistant"
           content={streamingContent || ''}
           isStreaming={!streamingContent}
         />
+      )}
+
+      {previewUrl && (
+        <div style={{ marginLeft: 52, maxWidth: '70%' }}>
+          <CodePreview url={previewUrl} />
+        </div>
       )}
     </div>
   );
